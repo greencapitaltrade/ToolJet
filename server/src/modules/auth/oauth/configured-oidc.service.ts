@@ -2,6 +2,7 @@ import { Injectable, NotFoundException, UnauthorizedException } from '@nestjs/co
 import type { Request, Response } from 'express';
 import { generators, Issuer } from 'openid-client';
 import { randomUUID } from 'node:crypto';
+import type { EntityManager } from 'typeorm';
 import { validate as isUuid } from 'uuid';
 import { User } from '@entities/user.entity';
 import { dbTransactionWrap } from '@helpers/database.helper';
@@ -89,7 +90,7 @@ export class ConfiguredOidcService {
   }
 
   async establishSession(response: Response, workspaceId: string, identity: OidcIdentity, email?: string) {
-    await dbTransactionWrap(async (manager) => {
+    await dbTransactionWrap(async (manager: EntityManager) => {
       const workspace = await this.sessions.findOrganization(workspaceId, manager);
       const bindings = await manager.query<{ user_id: string }[]>(
         'SELECT user_id FROM configured_oidc_identities WHERE issuer = $1 AND subject = $2',
