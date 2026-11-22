@@ -13,7 +13,8 @@ export async function handleApplicantRequest<T extends ApplicantScope>(
     input: unknown,
     id: string | undefined,
     setCookie: (id: string, ttl: number) => void
-  ) => Promise<unknown>
+  ) => Promise<unknown>,
+  mediaType = 'application/json'
 ) {
   res.set({ 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' });
   const label = purpose === 'borrower' ? 'Borrower' : 'Dealer';
@@ -24,12 +25,14 @@ export async function handleApplicantRequest<T extends ApplicantScope>(
     (req.get('sec-fetch-site') !== undefined && req.get('sec-fetch-site') !== 'same-origin')
   )
     return failure(403);
-  if (!req.is('application/json')) return failure(415);
-  if (
-    Number(req.get('content-length')) > 16 * 1024 ||
-    (req.rawBody !== undefined && Buffer.byteLength(req.rawBody) > 16 * 1024)
-  )
-    return failure(413);
+  if (!req.is(mediaType)) return failure(415);
+  if (mediaType === 'application/json') {
+    if (
+      Number(req.get('content-length')) > 16 * 1024 ||
+      (req.rawBody !== undefined && Buffer.byteLength(req.rawBody) > 16 * 1024)
+    )
+      return failure(413);
+  }
   const sessionCookie = `__Host-tj-${purpose}-onboarding`;
   const id = req.cookies?.[sessionCookie];
   try {

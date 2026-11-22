@@ -27,7 +27,14 @@ type State = {
 };
 type SetCookie = (id: string, ttl: number) => void;
 
-const draftSelection = 'id status nextStep canWrite entityFields';
+const draftSelection = 'id status nextStep canWrite entityFields version documentActions { code label mode count }';
+export const maxDealerDocumentBytes = 10 * 1024 * 1024;
+type DocumentMode = 'pdf' | 'photo' | 'camera' | 'file';
+type DocumentAction = { code: string; label: string; mode: DocumentMode; count: number };
+type DealerAction =
+  | { name: 'saveEntityDetails'; fields: string[] }
+  | { name: 'attachDocument'; documents: DocumentAction[] };
+const documentModes: readonly string[] = ['pdf', 'photo', 'camera', 'file'];
 const docs = {
   eligibility: {
     field: 'dealerReferralEligibility',
@@ -130,6 +137,34 @@ function operation(value: unknown): Operation {
   return rejectApplicant(400);
 }
 
+function validCameraLocation(value: unknown) {
+  if (!object(value) || Object.keys(value).length !== 4) return false;
+  const { latitude, longitude, accuracy, captured_at } = value;
+  const age = typeof captured_at === 'string' ? Date.now() - Date.parse(captured_at) : NaN;
+  return (
+    typeof latitude === 'number' &&
+    Math.abs(latitude) <= 90 &&
+    typeof longitude === 'number' &&
+    Math.abs(longitude) <= 180 &&
+    typeof accuracy === 'number' &&
+    Number.isFinite(accuracy) &&
+    accuracy > 0 &&
+    Number.isFinite(age) &&
+    age >= -5000 &&
+    age <= 60_000
+  );
+}
+
+function validDocument(mode: DocumentMode, bytes: Buffer, location: unknown) {
+  const pdf = bytes.subarray(0, 5).toString() === '%PDF-';
+  const jpeg = bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255;
+  const png = bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  if (mode === 'camera') return jpeg && bytes.length <= 96 * 1024 && validCameraLocation(location);
+  if (location !== undefined) return false;
+  if (mode === 'pdf') return pdf;
+  return jpeg || png || (mode === 'file' && pdf);
+}
+
 function draftView(value: unknown, expectedId?: string) {
   if (
     !object(value) ||
@@ -152,12 +187,38 @@ function draftView(value: unknown, expectedId?: string) {
     fields.length <= 2 &&
     new Set(fields).size === fields.length &&
     fields.every((key) => entityFieldNames.includes(key));
-  const actions = canEditEntity ? [{ name: 'saveEntityDetails', fields: fields as string[] }] : [];
+  const actions: DealerAction[] = canEditEntity ? [{ name: 'saveEntityDetails', fields: fields as string[] }] : [];
+  const version = value.version;
+  const docs: DocumentAction[] =
+    canWrite &&
+    ['details', 'documents'].includes(nextStep as string) &&
+    typeof version === 'number' &&
+    Number.isSafeInteger(version) &&
+    version > 0 &&
+    Array.isArray(value.documentActions)
+      ? value.documentActions.slice(0, 40).flatMap((item) => {
+          if (!object(item)) return [];
+          const { code, label, mode, count } = item;
+          return typeof code === 'string' &&
+            /^[a-z_]{1,64}$/.test(code) &&
+            typeof label === 'string' &&
+            label.length <= 160 &&
+            typeof mode === 'string' &&
+            documentModes.includes(mode) &&
+            typeof count === 'number' &&
+            Number.isInteger(count) &&
+            count >= 0 &&
+            count <= 24
+            ? [{ code, label, mode: mode as DocumentMode, count }]
+            : [];
+        })
+      : [];
+  if (docs.length) actions.push({ name: 'attachDocument', documents: docs });
   return {
     state: 'draft' as const,
-    draft: { id, status, nextStep, canWrite },
+    draft: { id, status, nextStep, canWrite, ...(docs.length ? { version: version as number } : {}) },
     actions,
-    continuationAvailable: canEditEntity,
+    continuationAvailable: actions.length > 0,
   };
 }
 
@@ -165,7 +226,10 @@ export class DealerOnboarding {
   private readonly fury: ApplicantFury;
   private readonly sessions: ApplicantSessions<State>;
 
-  constructor(redis: ApplicantRedis, fetcher: typeof fetch = fetch) {
+  constructor(
+    redis: ApplicantRedis,
+    private readonly fetcher: typeof fetch = fetch
+  ) {
     this.fury = new ApplicantFury(fetcher);
     this.sessions = new ApplicantSessions(redis, 'dealer');
   }
@@ -200,6 +264,56 @@ export class DealerOnboarding {
     if (!state.auth) return { state: state.phone ? 'otp' : 'phone' };
     if (!state.pan) return { state: 'pan' };
     return this.lookup(scope, state, key, state.pan);
+  }
+
+  async upload(scope: ApplicantScope, read: () => Promise<unknown>, id: string | undefined) {
+    const key = this.sessions.key(scope, id);
+    if (!id || !key) return rejectApplicant(409);
+    return this.sessions.withLock(key, async () => {
+      const state = await this.sessions.get(key);
+      if (!state?.auth || !state.pan || !state.draftId) return rejectApplicant(409);
+      await this.sessions.rate(scope, 'upload', id, 20, 120);
+      const input = await read();
+      if (
+        !object(input) ||
+        Object.keys(input).some((key) => !['code', 'file', 'location'].includes(key)) ||
+        typeof input.code !== 'string' ||
+        !/^[a-z_]{1,64}$/.test(input.code) ||
+        !Buffer.isBuffer(input.file) ||
+        input.file.length === 0 ||
+        input.file.length > maxDealerDocumentBytes
+      )
+        return rejectApplicant(400);
+      const { code, file, location } = input;
+      const current = await this.lookup(scope, state, key, state.pan);
+      if (current.state !== 'draft' || !current.draft.version) return rejectApplicant(409);
+      const action = current.actions.find((item) => item.name === 'attachDocument');
+      const target = action?.documents.find((item) => item.code === code);
+      if (!target) return rejectApplicant(409);
+      if (!validDocument(target.mode, file, location)) return rejectApplicant(400);
+      const body = new FormData();
+      body.append(
+        'metadata',
+        JSON.stringify({
+          referral_token: state.referral,
+          pan: state.pan,
+          version: current.draft.version,
+          code,
+          ...(location !== undefined ? { location } : {}),
+        })
+      );
+      body.append('file', new Blob([new Uint8Array(file)]), 'evidence');
+      const response = await this.fetcher(new URL('/v2/dealer/document', scope.furyUrl), {
+        method: 'POST',
+        redirect: 'error',
+        cache: 'no-store',
+        signal: AbortSignal.timeout(35_000),
+        headers: { device: state.device, cookie: `authorization=${state.auth.token}; device=${state.device}` },
+        body,
+      });
+      if (!response.ok || (await response.json())?.attached !== true) return rejectApplicant(503);
+      return this.lookup(scope, state, key, state.pan);
+    });
   }
 
   async run(scope: ApplicantScope | null, input: unknown, id: string | undefined, setCookie: SetCookie) {
@@ -256,7 +370,8 @@ export class DealerOnboarding {
       if (command.kind === 'saveEntityDetails') {
         if (!state.draftId) return rejectApplicant(409);
         const current = await this.lookup(scope, state, key, state.pan);
-        const fields = current.state === 'draft' && current.actions[0]?.fields;
+        const fields =
+          current.state === 'draft' && current.actions.find((item) => item.name === 'saveEntityDetails')?.fields;
         if (!fields) return rejectApplicant(409);
         if (
           fields.length !== Object.keys(command.fields).length ||

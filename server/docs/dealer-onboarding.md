@@ -32,13 +32,22 @@ tenant, applicant ID, draft ID, or signer on this admission route.
 Keep the public route and its ToolJet app disabled until the remaining draft
 actions are verified. The response only offers entity details while the pinned
 details step is pending and the linked applicant owns a writable draft. A second
-server status check guards that action before saving. The relevant remaining
-owner contracts are below.
+server status check guards that action before saving. The relevant owner contracts are below.
+
+`POST /api/dealer-onboarding/document` accepts one `multipart/form-data` file
+and a server-projected `code`. A camera capture includes `location` from the
+existing Fury popup. The relay checks the verified session before reading the
+file, limits attachments to 10 MiB, refreshes the pinned requirement and case
+version, and forwards to the fixed authenticated Fury document route. The UI
+receives new counts and document labels without file references or data. Bank
+statements use PDF. Cheques use JPEG or PNG. Location evidence requires a
+freshly geotagged JPEG. The viewer offers only the live mobile camera for
+this requirement.
 
 | Continuation | Existing contract and required linkage |
 | --- | --- |
-| Bank consent and statements | Scoped Destiny case AA routes. Use the server-selected draft, current document requirements and the existing provider lifecycle. |
-| Entity proofs, cheque and live premises photo | Destiny document requirements determine exact codes and count. The scoped Fury rear-camera popup produces photo and fresh coordinates in the staged native app. The public relay still needs purpose-specific private file transport. |
+| Bank consent and statements | PDF attachment is available through the document action. AA and account verification need their existing tenant-approved provider lifecycle. |
+| Entity proofs, cheque and live premises photo | Destiny document requirements determine exact codes and count. The scoped Fury rear-camera popup produces photo and fresh coordinates in the staged native app. The public relay uses the existing private registered-document storage through Fury. |
 | Each person’s KYC and match | Scoped participant consent must bind the actor to their own person association and current version before DigiLocker or selfie. The staged native app uses the separate Fury camera popup. |
 | All required signers and review | The pinned dealer policy fixes the signer roster. Only the current person may initiate their own provider action. Do not forward an arbitrary signer from a browser or expose private PDFs. |
 
