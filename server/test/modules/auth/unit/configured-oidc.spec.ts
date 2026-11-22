@@ -1,11 +1,9 @@
+import * as database from '@helpers/database.helper';
 import { UnauthorizedException } from '@nestjs/common';
 import { Issuer } from 'openid-client';
 import { ConfiguredOidcService } from '@modules/auth/oauth/configured-oidc.service';
 import { getConfiguredOidcSettings, oidcReturnPath } from '@modules/auth/oauth/configured-oidc.config';
 import { SSOResponseRepository } from '@modules/auth/oauth/repository/sso-response.repository';
-import { dbTransactionWrap } from '@helpers/database.helper';
-
-jest.mock('@helpers/database.helper', () => ({ dbTransactionWrap: jest.fn() }));
 
 /** @group platform */
 describe('Configured CE OIDC', () => {
@@ -172,7 +170,7 @@ describe('Configured CE OIDC', () => {
       query: jest.fn().mockResolvedValueOnce(mappedUserId ? [{ user_id: mappedUserId }] : []),
       findOne: jest.fn().mockResolvedValue(user),
     };
-    jest.mocked(dbTransactionWrap).mockImplementation(async (operation) => operation(manager));
+    jest.spyOn(database, 'dbTransactionWrap').mockImplementation(async (operation) => operation(manager));
     const sessions = {
       findOrganization: jest.fn().mockResolvedValue(workspace),
       generateLoginResultPayload: jest.fn(),

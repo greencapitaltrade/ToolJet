@@ -1,9 +1,7 @@
 import { UnauthorizedException } from '@nestjs/common';
-import { dbTransactionWrap } from '@helpers/database.helper';
+import * as database from '@helpers/database.helper';
 import { UserSessions } from '@entities/user_sessions.entity';
 import { SessionUtilService } from '@modules/session/util.service';
-
-jest.mock('@helpers/database.helper', () => ({ dbTransactionWrap: jest.fn() }));
 
 /** @group platform */
 describe('SessionUtilService configured OIDC actor', () => {
@@ -25,7 +23,7 @@ describe('SessionUtilService configured OIDC actor', () => {
       TOOLJET_OIDC_WORKSPACE_ID: workspaceId,
     });
     manager.findOne.mockReset();
-    jest.mocked(dbTransactionWrap).mockImplementation(async (operation) => operation(manager));
+    jest.spyOn(database, 'dbTransactionWrap').mockImplementation(async (operation) => operation(manager));
   });
   afterEach(() => jest.restoreAllMocks());
 
