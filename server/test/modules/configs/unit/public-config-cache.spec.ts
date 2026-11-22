@@ -47,9 +47,11 @@ describe('ConfigService.public_config cache', () => {
     const original = process.env;
     process.env = {
       ...original,
-      ALLOWED_CLIENT_CONFIG_VARS: 'LANGUAGE, TOOLJET_BORROWER_ONBOARDING, TOOLJET_DEALER_ONBOARDING',
+      ALLOWED_CLIENT_CONFIG_VARS:
+        'LANGUAGE, TOOLJET_BORROWER_ONBOARDING, TOOLJET_DEALER_ONBOARDING, TOOLJET_DEALER_PARTICIPANT',
       TOOLJET_BORROWER_ONBOARDING: '{"lspSecret":"synthetic-private-secret"}',
       TOOLJET_DEALER_ONBOARDING: '{"lspSecret":"synthetic-other-private-secret"}',
+      TOOLJET_DEALER_PARTICIPANT: '{"lspSecret":"synthetic-participant-secret"}',
       LANGUAGE: 'en',
     };
     try {
@@ -57,6 +59,7 @@ describe('ConfigService.public_config cache', () => {
       expect(config).toMatchObject({ LANGUAGE: 'en' });
       expect(config).not.toHaveProperty('TOOLJET_BORROWER_ONBOARDING');
       expect(config).not.toHaveProperty('TOOLJET_DEALER_ONBOARDING');
+      expect(config).not.toHaveProperty('TOOLJET_DEALER_PARTICIPANT');
     } finally {
       process.env = original;
     }
