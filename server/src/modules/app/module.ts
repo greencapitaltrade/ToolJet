@@ -95,6 +95,7 @@ import { OtelMiddleware } from './middlewares/otel.middleware';
 import { MigrationGateMiddleware } from './middlewares/migration-gate.middleware';
 import { WorkspaceContextModule } from '@modules/workspace-context/module';
 import { NotificationsModule } from '@modules/notifications/module';
+import { BorrowerOnboardingController } from '@modules/borrower-onboarding/controller';
 
 export class AppModule implements OnModuleInit, NestModule {
   constructor(
@@ -251,7 +252,7 @@ export class AppModule implements OnModuleInit, NestModule {
     return {
       module: AppModule,
       imports: [DiscoveryModule, ...modules, ...imports],
-      controllers: [AppController, MigrationRunsController],
+      controllers: [AppController, MigrationRunsController, BorrowerOnboardingController],
       providers: [
         /* Bound here rather than in main.ts so enforcement is part of the module graph: any
            consumer that builds this module gets it, including the e2e harness, which never runs
