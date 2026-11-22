@@ -79,11 +79,16 @@ function setup() {
     if (query.includes('dealerOwnerParticipant'))
       return Response.json({ data: { dealerOwnerParticipant: { status: 'invited', id: draft.id } } });
     if (query.includes('dealerOwnerCompletion'))
-      return Response.json({ data: { dealerOwnerCompletion: {
-        stage: completionStage, version: 5,
-        actions: completionStage === 'bank_verification_required' ? ['VERIFY_BANK'] : [],
-        signer: 'private',
-      } } });
+      return Response.json({
+        data: {
+          dealerOwnerCompletion: {
+            stage: completionStage,
+            version: 5,
+            actions: completionStage === 'bank_verification_required' ? ['VERIFY_BANK'] : [],
+            signer: 'private',
+          },
+        },
+      });
     if (query.includes('dealerPanLookup'))
       return Response.json({
         data: {
@@ -110,7 +115,9 @@ function setup() {
     call,
     fetcher,
     cookie: () => session,
-    setCompletionStage: (stage: string) => { completionStage = stage; },
+    setCompletionStage: (stage: string) => {
+      completionStage = stage;
+    },
     setEvidence: (actions: unknown[]) => {
       evidence = actions;
     },
@@ -129,7 +136,9 @@ it('uses only current server-authorized dealer completion actions and versions',
   await fixture.call('lookup', { pan: 'AAAFA1234A' });
   await fixture.call('start', details);
   await expect(fixture.call('agreementStatus')).resolves.toEqual({
-    state: 'dealerCompletion', stage: 'bank_verification_required', actions: ['verifyBank'],
+    state: 'dealerCompletion',
+    stage: 'bank_verification_required',
+    actions: ['verifyBank'],
   });
   await expect(fixture.call('freezeAgreement', { version: 5 })).rejects.toMatchObject({ status: 400 });
   await expect(fixture.call('freezeAgreement')).rejects.toMatchObject({ status: 409 });

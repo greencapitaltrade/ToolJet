@@ -35,6 +35,28 @@ type DealerAction =
   | { name: 'saveEntityDetails'; fields: string[] }
   | { name: 'attachDocument'; documents: DocumentAction[] };
 const documentModes: readonly string[] = ['pdf', 'photo', 'camera', 'file'];
+const completionOperations = {
+  agreementStatus: 'STATUS',
+  prepareAgreement: 'PREPARE',
+  verifyBank: 'VERIFY_BANK',
+  freezeAgreement: 'FREEZE',
+  refreshSignatures: 'REFRESH',
+  submitForReview: 'SUBMIT',
+} as const;
+const completionStages = {
+  evidence_required: null,
+  evidence_ready: 'prepareAgreement',
+  review_pending: null,
+  bank_details_required: null,
+  bank_verification_required: 'verifyBank',
+  agreement_ready: 'freezeAgreement',
+  agreement_unavailable: null,
+  signing_pending: 'refreshSignatures',
+  ready_to_submit: 'submitForReview',
+  submitted: null,
+  closed: null,
+} as const;
+type CompletionOperation = keyof typeof completionOperations;
 const docs = {
   eligibility: {
     field: 'dealerReferralEligibility',
@@ -59,6 +81,14 @@ const docs = {
     query: `mutation DealerOwnerParticipant($referralToken: String!, $draftId: ID!, $action: DealerOwnerParticipantAction!, $fields: JSON) {
       dealerOwnerParticipant(referralToken: $referralToken, draftId: $draftId, action: $action, fields: $fields) {
         status id version consents { id status name role }
+      }
+    }`,
+  },
+  completion: {
+    field: 'dealerOwnerCompletion',
+    query: `mutation DealerOwnerCompletion($referralToken: String!, $draftId: ID!, $action: DealerOwnerCompletionAction!, $version: Int) {
+      dealerOwnerCompletion(referralToken: $referralToken, draftId: $draftId, action: $action, version: $version) {
+        stage version actions
       }
     }`,
   },
@@ -91,6 +121,7 @@ type Operation =
   | { kind: 'lookup'; pan: string }
   | { kind: 'saveEntityDetails'; fields: Fields }
   | { kind: 'start'; fields: Fields }
+  | { kind: 'completion'; operation: CompletionOperation }
   | { kind: 'ownerParticipant'; action: 'INVITE' | 'LIST' | 'ACCEPT'; fields: Payload };
 
 function operation(value: unknown): Operation {
@@ -109,6 +140,12 @@ function operation(value: unknown): Operation {
   }
   if ('referralToken' in value) return rejectApplicant(400);
   if (value.operation === 'status' && !keys.length) return { kind: 'status' };
+  if (
+    !keys.length &&
+    typeof value.operation === 'string' &&
+    Object.prototype.hasOwnProperty.call(completionOperations, value.operation)
+  )
+    return { kind: 'completion', operation: value.operation as CompletionOperation };
   if (value.operation === 'requestOtp' && keys.length === 1) {
     const phone = normalizeApplicantPhone(fields.phone);
     if (phone) return { kind: 'requestOtp', phone };
@@ -246,6 +283,31 @@ function draftView(value: unknown, expectedId?: string) {
   };
 }
 
+function completionView(value: unknown) {
+  if (
+    !object(value) ||
+    typeof value.stage !== 'string' ||
+    !Object.prototype.hasOwnProperty.call(completionStages, value.stage) ||
+    typeof value.version !== 'number' ||
+    !Number.isSafeInteger(value.version) ||
+    value.version < 1 ||
+    !Array.isArray(value.actions)
+  )
+    return rejectApplicant(503);
+  const stage = value.stage as keyof typeof completionStages;
+  const allowed = completionStages[stage];
+  if (
+    allowed
+      ? value.actions.length !== 1 || value.actions[0] !== completionOperations[allowed]
+      : value.actions.length !== 0
+  )
+    return rejectApplicant(503);
+  return {
+    version: value.version,
+    view: { state: 'dealerCompletion' as const, stage, actions: allowed ? [allowed] : [] },
+  };
+}
+
 export class DealerOnboarding {
   private readonly fury: ApplicantFury;
   private readonly sessions: ApplicantSessions<State>;
@@ -288,6 +350,21 @@ export class DealerOnboarding {
     if (!state.auth) return { state: state.phone ? 'otp' : 'phone' };
     if (!state.pan) return { state: 'pan' };
     return this.lookup(scope, state, key, state.pan);
+  }
+
+  private async completion(scope: ApplicantScope, state: State, operation: CompletionOperation) {
+    if (!state.draftId || !state.phone) return rejectApplicant(409);
+    await this.sessions.rate(scope, 'owner-completion', state.phone, 20, 60);
+    const subject = { referralToken: state.referral, draftId: state.draftId };
+    const current = completionView(
+      await this.fury.request(scope, docs.completion, { ...subject, action: 'STATUS' }, state)
+    );
+    const action = completionOperations[operation];
+    if (action === 'STATUS') return current.view;
+    if (!current.view.actions.some((allowed) => allowed === operation)) return rejectApplicant(409);
+    return completionView(
+      await this.fury.request(scope, docs.completion, { ...subject, action, version: current.version }, state)
+    ).view;
   }
 
   async upload(scope: ApplicantScope, read: () => Promise<unknown>, id: string | undefined) {
@@ -386,6 +463,7 @@ export class DealerOnboarding {
         return { state: 'pan' };
       }
       if (!state.auth) return rejectApplicant(409);
+      if (command.kind === 'completion') return this.completion(scope, state, command.operation);
       if (command.kind === 'ownerParticipant') {
         if (!state.draftId || !state.phone) return rejectApplicant(409);
         await this.sessions.rate(scope, 'owner-participant', state.phone, 20, 60);
