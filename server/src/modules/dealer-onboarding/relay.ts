@@ -13,6 +13,7 @@ const panPattern = /^[A-Z]{3}[CFP][A-Z][0-9]{4}[A-Z]$/;
 const gstPattern = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]Z[0-9A-Z]$/;
 const uuidPattern = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
 const fieldLimits = { businessName: 255, applicantName: 255, applicantRole: 30, email: 254, gstin: 15, firmType: 20 };
+const entityFieldNames = ['premises', 'cin', 'llpin'];
 const guestTtl = 600;
 type Payload = Record<string, unknown>;
 type Fields = Record<string, string>;
@@ -26,6 +27,7 @@ type State = {
 };
 type SetCookie = (id: string, ttl: number) => void;
 
+const draftSelection = 'id status nextStep canWrite entityFields';
 const docs = {
   eligibility: {
     field: 'dealerReferralEligibility',
@@ -36,14 +38,20 @@ const docs = {
   lookup: {
     field: 'dealerPanLookup',
     query: `mutation DealerLookup($referral_token: String!, $pan: String!) {
-    dealerPanLookup(referral_token: $referral_token, pan: $pan) { status category draft { id status nextStep canWrite } }
+    dealerPanLookup(referral_token: $referral_token, pan: $pan) { status category draft { ${draftSelection} } }
   }`,
   },
   start: {
     field: 'dealerIntakeStart',
     query: `mutation DealerStart($referral_token: String!, $input: DealerIntakeStartInput!) {
-    dealerIntakeStart(referral_token: $referral_token, input: $input) { id status nextStep canWrite }
+    dealerIntakeStart(referral_token: $referral_token, input: $input) { ${draftSelection} }
   }`,
+  },
+  entity: {
+    field: 'dealerEntityDetailsSave',
+    query: `mutation DealerEntity($referral_token: String!, $pan: String!, $fields: DealerEntityDetailsInput!) {
+      dealerEntityDetailsSave(referral_token: $referral_token, pan: $pan, fields: $fields) { ${draftSelection} }
+    }`,
   },
 };
 
@@ -66,6 +74,7 @@ type Operation =
   | { kind: 'requestOtp'; phone: string }
   | { kind: 'verifyOtp'; otp: string }
   | { kind: 'lookup'; pan: string }
+  | { kind: 'saveEntityDetails'; fields: Fields }
   | { kind: 'start'; fields: Fields };
 
 function operation(value: unknown): Operation {
@@ -100,6 +109,12 @@ function operation(value: unknown): Operation {
     if (panPattern.test(pan)) return { kind: 'lookup', pan };
   }
   if (
+    value.operation === 'saveEntityDetails' &&
+    ['owned', 'leased'].includes(String(fields.premises)) &&
+    keys.every((key) => entityFieldNames.includes(key) && typeof fields[key] === 'string' && fields[key].length <= 21)
+  )
+    return { kind: 'saveEntityDetails', fields: fields as Fields };
+  if (
     value.operation === 'start' &&
     keys.every(
       (key) =>
@@ -128,7 +143,22 @@ function draftView(value: unknown, expectedId?: string) {
   )
     return rejectApplicant(503);
   const { id, status, nextStep, canWrite } = value;
-  return { state: 'draft', draft: { id, status, nextStep, canWrite }, actions: [], continuationAvailable: false };
+  const fields = value.entityFields;
+  const canEditEntity =
+    canWrite &&
+    nextStep === 'details' &&
+    Array.isArray(fields) &&
+    fields[0] === 'premises' &&
+    fields.length <= 2 &&
+    new Set(fields).size === fields.length &&
+    fields.every((key) => entityFieldNames.includes(key));
+  const actions = canEditEntity ? [{ name: 'saveEntityDetails', fields: fields as string[] }] : [];
+  return {
+    state: 'draft' as const,
+    draft: { id, status, nextStep, canWrite },
+    actions,
+    continuationAvailable: canEditEntity,
+  };
 }
 
 export class DealerOnboarding {
@@ -163,7 +193,7 @@ export class DealerOnboarding {
     )
       return rejectApplicant(503);
     if (pan !== state.pan) await this.sessions.save(key, { ...state, pan });
-    return { state: 'details', category: result.category };
+    return { state: 'details' as const, category: result.category };
   }
 
   private async status(scope: ApplicantScope, state: State, key: string) {
@@ -223,6 +253,30 @@ export class DealerOnboarding {
         return this.lookup(scope, state, key, command.pan);
       }
       if (!state.pan) return rejectApplicant(409);
+      if (command.kind === 'saveEntityDetails') {
+        if (!state.draftId) return rejectApplicant(409);
+        const current = await this.lookup(scope, state, key, state.pan);
+        const fields = current.state === 'draft' && current.actions[0]?.fields;
+        if (!fields) return rejectApplicant(409);
+        if (
+          fields.length !== Object.keys(command.fields).length ||
+          !fields.every((field) => Object.prototype.hasOwnProperty.call(command.fields, field))
+        )
+          return rejectApplicant(400);
+        return draftView(
+          await this.fury.request(
+            scope,
+            docs.entity,
+            {
+              referral_token: state.referral,
+              pan: state.pan,
+              fields: command.fields,
+            },
+            state
+          ),
+          state.draftId
+        );
+      }
       if (state.draftId) return this.status(scope, state, key);
       const gstin = command.fields.gstin.trim().toUpperCase();
       if (!gstPattern.test(gstin) || gstin.slice(2, 12) !== state.pan) return rejectApplicant(400);

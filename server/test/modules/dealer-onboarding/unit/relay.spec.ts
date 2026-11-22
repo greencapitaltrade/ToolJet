@@ -52,6 +52,7 @@ function setup() {
     },
   };
   let created = false;
+  let entityFields: string[] = [];
   const fetcher = jest.fn(async (_url, request) => {
     const { query, variables } = JSON.parse(request.body);
     if (query.includes('dealerReferralEligibility'))
@@ -74,11 +75,17 @@ function setup() {
     }
     if (query.includes('dealerPanLookup'))
       return Response.json({
-        data: { dealerPanLookup: created ? { status: 'resume', draft } : { status: 'new', category: 'firm' } },
+        data: {
+          dealerPanLookup: created
+            ? { status: 'resume', draft: { ...draft, entityFields } }
+            : { status: 'new', category: 'firm' },
+        },
       });
+    if (query.includes('dealerEntityDetailsSave'))
+      return Response.json({ data: { dealerEntityDetailsSave: { ...draft, entityFields } } });
     if (!query.includes('dealerIntakeStart')) throw new Error('Unsupported operation');
     created = true;
-    return Response.json({ data: { dealerIntakeStart: { ...draft, dossier: 'private' } } });
+    return Response.json({ data: { dealerIntakeStart: { ...draft, entityFields, dossier: 'private' } } });
   });
   const service = new DealerOnboarding(redis, fetcher);
   let session: string | undefined;
@@ -87,7 +94,15 @@ function setup() {
   };
   const call = (operation: string, fields = {}, extra = {}) =>
     service.run(config, { operation, fields, ...extra }, session, capture);
-  return { service, call, fetcher, cookie: () => session };
+  return {
+    service,
+    call,
+    fetcher,
+    cookie: () => session,
+    entityFields: (fields: string[]) => {
+      entityFields = fields;
+    },
+  };
 }
 
 it('verifies the invite and OTP, saves PAN server-side, creates under the invite and resumes only its draft', async () => {
@@ -140,6 +155,34 @@ it('remains off without an exact HTTPS scope', () => {
       JSON.stringify({ ...config, furyUrl: 'https://gateway.example.test/v2/graphql?override=true' })
     )
   ).toBeNull();
+});
+
+it('exposes and executes only the currently available server-selected entity action', async () => {
+  const fixture = setup();
+  await fixture.call('entry', {}, { referralToken });
+  await fixture.call('requestOtp', { phone: '9999900001' });
+  await fixture.call('verifyOtp', { otp: '123456' });
+  await fixture.call('lookup', { pan: 'AAAFA1234A' });
+  fixture.entityFields(['premises', 'llpin']);
+  const action = { name: 'saveEntityDetails', fields: ['premises', 'llpin'] };
+  await expect(fixture.call('start', details)).resolves.toMatchObject({ actions: [action] });
+  await expect(fixture.call('saveEntityDetails', { premises: 'owned' })).rejects.toMatchObject({ status: 400 });
+  await expect(fixture.call('saveEntityDetails', { premises: 'owned', llpin: 'ABC-1234' })).resolves.toMatchObject({
+    actions: [action],
+  });
+  fixture.entityFields([]);
+  await expect(fixture.call('saveEntityDetails', { premises: 'owned', llpin: 'ABC-1234' })).rejects.toMatchObject({
+    status: 409,
+  });
+  const writes = fixture.fetcher.mock.calls
+    .map(([, request]) => JSON.parse(request.body))
+    .filter((x) => x.query.includes('dealerEntityDetailsSave'));
+  expect(writes).toHaveLength(1);
+  expect(writes[0].variables).toEqual({
+    referral_token: referralToken,
+    pan: 'AAAFA1234A',
+    fields: { premises: 'owned', llpin: 'ABC-1234' },
+  });
 });
 
 it('removes dealer PAN, contact details and invite tokens from application traces only on the exact route', () => {

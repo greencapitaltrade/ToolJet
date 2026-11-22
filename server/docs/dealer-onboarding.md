@@ -21,6 +21,7 @@ checks every case using the referral and verified user.
 | `verifyOtp` | `fields.otp` | `pan` and rotated opaque session cookie |
 | `lookup` | `fields.pan` | new business category or the applicant’s existing draft |
 | `start` | `gstin`, `businessName`, `applicantName`, `applicantRole`, `email`, optional `firmType` | the same scoped draft on retry |
+| `saveEntityDetails` | server-selected `premises` and applicable `cin` or `llpin` | the same draft after an owned, versioned details update |
 | `status` | empty `fields` | confirmed stage or draft status and current policy step |
 
 The applicant selects Partnership or LLP after a firm PAN. The registry
@@ -29,12 +30,14 @@ still uses the established review process. The browser never chooses the parent,
 tenant, applicant ID, draft ID, or signer on this admission route.
 
 Keep the public route and its ToolJet app disabled until the remaining draft
-actions are verified. The response currently contains no executable continuation
-actions. The relevant existing owner contracts are below.
+actions are verified. The response only offers entity details while the pinned
+details step is pending and the linked applicant owns a writable draft. A second
+server status check guards that action before saving. The relevant remaining
+owner contracts are below.
 
 | Continuation | Existing contract and required linkage |
 | --- | --- |
-| Entity details and bank consent | Scoped Destiny intake save/prepare and case AA routes. Use only the server-selected draft; validate its version and selected current step. |
+| Bank consent and statements | Scoped Destiny case AA routes. Use the server-selected draft, current document requirements and the existing provider lifecycle. |
 | Entity proofs, cheque and live premises photo | Destiny document requirements determine exact codes and count. The scoped Fury rear-camera popup produces photo and fresh coordinates in the staged native app. The public relay still needs purpose-specific private file transport. |
 | Each person’s KYC and match | Scoped participant consent must bind the actor to their own person association and current version before DigiLocker or selfie. The staged native app uses the separate Fury camera popup. |
 | All required signers and review | The pinned dealer policy fixes the signer roster. Only the current person may initiate their own provider action. Do not forward an arbitrary signer from a browser or expose private PDFs. |
