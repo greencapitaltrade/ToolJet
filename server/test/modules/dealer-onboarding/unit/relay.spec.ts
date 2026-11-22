@@ -53,7 +53,9 @@ function setup() {
   };
   let created = false;
   let entityFields: string[] = [];
+  let evidence: unknown[] = [];
   const fetcher = jest.fn(async (_url, request) => {
+    if (request.body instanceof FormData) return Response.json({ attached: true });
     const { query, variables } = JSON.parse(request.body);
     if (query.includes('dealerReferralEligibility'))
       return Response.json({ data: { dealerReferralEligibility: { organizationId: '39', eligible: true } } });
@@ -77,7 +79,7 @@ function setup() {
       return Response.json({
         data: {
           dealerPanLookup: created
-            ? { status: 'resume', draft: { ...draft, entityFields } }
+            ? { status: 'resume', draft: { ...draft, entityFields, documentActions: evidence, version: 3 } }
             : { status: 'new', category: 'firm' },
         },
       });
@@ -99,6 +101,9 @@ function setup() {
     call,
     fetcher,
     cookie: () => session,
+    setEvidence: (actions: unknown[]) => {
+      evidence = actions;
+    },
     entityFields: (fields: string[]) => {
       entityFields = fields;
     },
@@ -192,4 +197,44 @@ it('removes dealer PAN, contact details and invite tokens from application trace
     rawBody: '[REDACTED]',
   });
   expect(isApplicantOnboardingRequest('/api/dealer-onboarding-preview')).toBe(false);
+});
+
+it('attaches only projected evidence under the verified cookie and server-selected version', async () => {
+  const fixture = setup();
+  const pdf = Buffer.from('%PDF-1.4 synthetic statement');
+  const bank = { code: 'bank_statement', label: 'Bank statements', mode: 'pdf', count: 0 };
+  const request = { code: 'bank_statement', file: pdf };
+  await expect(fixture.service.upload(config, async () => request, undefined)).rejects.toMatchObject({ status: 409 });
+  await fixture.call('entry', {}, { referralToken });
+  await fixture.call('requestOtp', { phone: '9999900001' });
+  await fixture.call('verifyOtp', { otp: '123456' });
+  await fixture.call('lookup', { pan: 'AAAFA1234A' });
+  await fixture.call('start', details);
+  await expect(fixture.service.upload(config, async () => request, fixture.cookie())).rejects.toMatchObject({
+    status: 409,
+  });
+  fixture.setEvidence([{ ...bank, storageKey: 'private' }]);
+  await expect(fixture.call('status')).resolves.toMatchObject({
+    actions: [{ name: 'attachDocument', documents: [bank] }],
+  });
+  await expect(
+    fixture.service.upload(config, async () => ({ ...request, version: 99 }), fixture.cookie())
+  ).rejects.toMatchObject({ status: 400 });
+  await expect(
+    fixture.service.upload(config, async () => ({ ...request, file: Buffer.from('junk') }), fixture.cookie())
+  ).rejects.toMatchObject({ status: 400 });
+  await expect(fixture.service.upload(config, async () => request, fixture.cookie())).resolves.toMatchObject({
+    state: 'draft',
+  });
+  const [url, options] = fixture.fetcher.mock.calls.find(([, value]) => value.body instanceof FormData);
+  expect(String(url)).toBe('https://gateway.example.test/v2/dealer/document');
+  expect(options.headers.cookie).toMatch(/^authorization=header\..+; device=/);
+  expect(options.headers['api-secret']).toBeUndefined();
+  expect(JSON.parse(options.body.get('metadata'))).toEqual({
+    code: bank.code,
+    version: 3,
+    pan: 'AAAFA1234A',
+    referral_token: referralToken,
+  });
+  expect(await options.body.get('file').text()).toBe(pdf.toString());
 });

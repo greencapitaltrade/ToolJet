@@ -8,6 +8,7 @@ import { InitFeature } from '@modules/app/decorators/init-feature.decorator';
 import { InitModule } from '@modules/app/decorators/init-module';
 import { RedisService } from '@modules/redis/service';
 import { ApplicantHttpRequest, handleApplicantRequest } from '../applicant-session/http';
+import { parseDealerUpload } from './upload';
 import { DEALER_ONBOARDING_ENV, DealerOnboarding, parseDealerOnboardingConfig } from './relay';
 
 @Controller('dealer-onboarding')
@@ -28,5 +29,18 @@ export class DealerOnboardingController {
   async handle(@Req() req: ApplicantHttpRequest, @Res() res: Response) {
     const settings = parseDealerOnboardingConfig(this.config.get<string>(DEALER_ONBOARDING_ENV));
     return handleApplicantRequest(req, res, settings, 'dealer', this.relay.run.bind(this.relay));
+  }
+  @Post('document')
+  @InitFeature(FEATURE_KEY.DEALER_ONBOARDING)
+  async upload(@Req() req: ApplicantHttpRequest, @Res() res: Response) {
+    const settings = parseDealerOnboardingConfig(this.config.get<string>(DEALER_ONBOARDING_ENV));
+    return handleApplicantRequest(
+      req,
+      res,
+      settings,
+      'dealer',
+      (scope, _body, id) => this.relay.upload(scope, () => parseDealerUpload(req, res), id),
+      'multipart/form-data'
+    );
   }
 }
