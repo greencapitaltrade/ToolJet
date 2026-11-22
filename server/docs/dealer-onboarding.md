@@ -90,3 +90,23 @@ The separate existing-receipt entry remains available for compatibility.
 
 The staged app remains private. Participant selfie transport and native viewer
 verification are required before enabling this workflow.
+
+## Owner agreement and submission
+
+`agreementStatus` returns the current stage and at most one allowed action.
+`prepareAgreement`, `verifyBank`, `freezeAgreement`, `refreshSignatures`, and
+`submitForReview` accept no browser fields. The relay supplies the case,
+signed referral and current version from its authenticated owner session.
+Destiny checks the original owner and pinned dealer policy again for each
+operation. Responses omit account details, signed files and signer links.
+
+Preparation requires registered evidence and opens any configured intermediate
+review. Bank verification uses the saved execution data, the pinned product,
+and the configured AU remitter. Statement attachments and the verified bank
+snapshot are separate prerequisites. Agreement preparation preserves the snapshot and
+frozen Aadhaar signer roster. Submission requires completed provider signing
+and opens independent review. Existing fee checks remain on review claims
+and decisions.
+
+The bank and legal execution details and the owner's own KYC, selfie, and
+signature continue through the existing private intake routes.
