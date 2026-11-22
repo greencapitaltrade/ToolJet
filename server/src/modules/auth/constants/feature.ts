@@ -58,6 +58,9 @@ export const FEATURES: FeaturesConfig = {
     [FEATURE_KEY.OAUTH_SAML_RESPONSE]: {
       isPublic: true,
     },
+    [FEATURE_KEY.PARTNER_OPS]: {
+      isPublic: true,
+    },
     [FEATURE_KEY.AI_ONBOARDING]: {
       isPublic: true,
     },
