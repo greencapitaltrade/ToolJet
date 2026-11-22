@@ -17,3 +17,7 @@ the shared short-lived applicant store.
   cookie. It verifies OTP before attaching a consent receipt. Its trusted
   downstream verifies the signed dealer parent and the authenticated receipt
   actor before displaying status or running an own-person action.
+- Owner handoff operations use the draft and signed referral already stored in
+  the verified owner session. The participant route stores only the opaque
+  invitation reference before OTP, then obtains the current receipt downstream.
+  Keep copied links and the participant role out of query logs and storage.

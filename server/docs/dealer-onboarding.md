@@ -73,7 +73,20 @@ for the session. `status`, `startKyc`, `syncKyc`, `sign` and `withdraw` accept
 empty `fields`. Public responses contain only the projected status and allowed
 actions, plus an approved provider redirect when needed.
 
-The reference flow attaches an existing receipt after OTP. Owner approval and
-receipt delivery remain with the existing scoped consent process. Public receipt
-delivery, participant selfie transport and native viewer verification are
-required before enabling this route or publishing a participant app.
+An owner can use `inviteParticipant` with the intended `mobile`, copy the
+invitation, list `participantRequests`, and `acceptParticipant` with an exact
+pending `consentId` and the listed `version`. The ToolJet server uses its
+verified draft and signed referral for each action. It does not dispatch any
+notification.
+
+The participant link carries an opaque invitation reference alongside the
+signed referral. `entry` accepts it as `fields.invitationId`. The relay does
+not look up the reference before independent OTP. `status` then recovers the
+participant’s own receipt or requests their consent details. `claim` accepts
+only `consent`, `name`, `role`, `din` and `kyc_contact`. Destiny checks the
+verified mobile against the owner’s invitation. The relay stores the receipt
+in the participant session and continues through the same own-person actions.
+The separate existing-receipt entry remains available for compatibility.
+
+The staged app remains private. Participant selfie transport and native viewer
+verification are required before enabling this workflow.

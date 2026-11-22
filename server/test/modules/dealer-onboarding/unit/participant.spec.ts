@@ -67,6 +67,14 @@ function setup() {
       const token = `header.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.signature`;
       return Response.json({ data: { sessionPut: { token } } });
     }
+    if (query.includes('dealerParticipantClaim'))
+      return Response.json({
+        data: {
+          dealerParticipantClaim: Object.keys(variables.fields).length
+            ? { status: 'pending', id: consentId }
+            : { status: 'unclaimed' },
+        },
+      });
     if (query.includes('dealerParticipantAttach')) {
       if (!owner) return Response.json({ errors: [{ message: 'private upstream error' }] });
       return Response.json({
@@ -215,4 +223,24 @@ it('keeps participant credentials, cookies and telemetry separate from the deale
     body: '[REDACTED]',
     rawBody: '[REDACTED]',
   });
+});
+
+it('checks a handoff only after independent OTP and keeps its recovered receipt server-side', async () => {
+  const { invoke, requests } = setup();
+  const invitationId = 'b62cbf35-1ff2-44ce-bd21-77a8f400a9bf';
+  await invoke('entry', { invitationId }, { referralToken });
+  await expect(invoke('claim', { consent: true })).rejects.toMatchObject({ status: 409 });
+  await invoke('requestOtp', { phone: '9999900001' });
+  expect(requests().some(({ query }) => query.includes('dealerParticipantClaim'))).toBe(false);
+  await expect(invoke('verifyOtp', { otp: '123456' })).resolves.toEqual({ state: 'participantEntry' });
+  await expect(invoke('status')).resolves.toEqual({ state: 'participantDetails' });
+  await expect(invoke('attach', { consentId })).rejects.toMatchObject({ status: 409 });
+  await expect(
+    invoke('claim', { consent: true, name: 'Synthetic user', role: 'Director', kyc_contact: 'person@example.test' })
+  ).resolves.toMatchObject({ state: 'participant' });
+  expect(
+    requests()
+      .filter(({ query }) => query.includes('dealerParticipantClaim'))
+      .at(-1).variables
+  ).toMatchObject({ referralToken, invitationId });
 });

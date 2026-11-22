@@ -15,7 +15,14 @@ const statuses = ['pending', 'accepted', 'expired', 'withdrawn'];
 const actions = { startKyc: 'START_KYC', syncKyc: 'SYNC_KYC', sign: 'SIGN', withdraw: 'WITHDRAW' } as const;
 type Action = keyof typeof actions;
 type Scope = ApplicantScope & { kycOrigin: string; signingOrigin: string };
-type State = { referral: string; device: string; phone?: string; auth?: { token: string }; receipt?: string };
+type State = {
+  referral: string;
+  device: string;
+  phone?: string;
+  auth?: { token: string };
+  receipt?: string;
+  invitation?: string;
+};
 type SetCookie = (id: string, ttl: number) => void;
 type Input = Record<string, unknown>;
 
@@ -31,6 +38,12 @@ const attachment = {
     dealerParticipantAttach(referralToken: $referralToken, consentId: $consentId) {
       status kycStatus selfieVerified agreementPrepared
     }
+  }`,
+};
+const claimInvitation = {
+  field: 'dealerParticipantClaim',
+  query: `mutation DealerParticipantClaim($referralToken: String!, $invitationId: ID!, $fields: JSON) {
+    dealerParticipantClaim(referralToken: $referralToken, invitationId: $invitationId, fields: $fields) { status id }
   }`,
 };
 const ownAction = {
@@ -67,11 +80,12 @@ export function parseDealerParticipantConfig(value: string | undefined): Scope |
 }
 
 type Command =
-  | { kind: 'entry'; referral?: string }
+  | { kind: 'entry'; referral?: string; invitation?: string }
   | { kind: 'status' }
   | { kind: 'requestOtp'; phone: string }
   | { kind: 'verifyOtp'; otp: string }
   | { kind: 'attach'; receipt: string }
+  | { kind: 'claim'; fields: Input }
   | { kind: Action };
 
 function parseCommand(input: unknown): Command {
@@ -83,13 +97,26 @@ function parseCommand(input: unknown): Command {
     return rejectApplicant(400);
   const { fields, operation, referralToken } = input;
   const keys = Object.keys(fields);
-  if (operation === 'entry' && keys.length === 0) {
-    if (referralToken === undefined) return { kind: 'entry' };
-    if (typeof referralToken === 'string' && referralPattern.test(referralToken))
-      return { kind: 'entry', referral: referralToken };
+  if (operation === 'entry') {
+    if (keys.length === 0 && referralToken === undefined) return { kind: 'entry' };
+    if (typeof referralToken === 'string' && referralPattern.test(referralToken)) {
+      if (keys.length === 0) return { kind: 'entry', referral: referralToken };
+      if (keys.length === 1 && typeof fields.invitationId === 'string' && receiptPattern.test(fields.invitationId))
+        return { kind: 'entry', referral: referralToken, invitation: fields.invitationId };
+    }
   }
   if ('referralToken' in input) return rejectApplicant(400);
   if (operation === 'status' && keys.length === 0) return { kind: 'status' };
+  if (
+    operation === 'claim' &&
+    fields.consent === true &&
+    keys.every(
+      (key) =>
+        ['consent', 'name', 'role', 'din', 'kyc_contact'].includes(key) &&
+        (key === 'consent' || (typeof fields[key] === 'string' && fields[key].length <= 255))
+    )
+  )
+    return { kind: 'claim', fields };
   if (typeof operation === 'string' && keys.length === 0 && Object.prototype.hasOwnProperty.call(actions, operation))
     return { kind: operation as Action };
   if (operation === 'requestOtp' && keys.length === 1) {
@@ -181,6 +208,28 @@ export class DealerParticipant {
     }
   }
 
+  private async claim(scope: Scope, key: string, state: State, fields: Input) {
+    if (!state.auth || !state.phone || !state.invitation) return rejectApplicant(409);
+    await this.sessions.rate(scope, 'claim', state.phone, 12, 60);
+    const result = await this.fury.request(
+      scope,
+      claimInvitation,
+      {
+        referralToken: state.referral,
+        invitationId: state.invitation,
+        fields,
+      },
+      state
+    );
+    if (result.status === 'unclaimed' || result.status === 'expired') return { state: 'participantDetails' };
+    if (typeof result.id !== 'string' || !receiptPattern.test(result.id)) return rejectApplicant(503);
+    if (state.receipt && state.receipt !== result.id) return rejectApplicant(409);
+    const view = await this.attach(scope, state, result.id);
+    if (!view) return rejectApplicant(409);
+    if (!state.receipt) await this.sessions.save(key, { ...state, receipt: result.id });
+    return view;
+  }
+
   async run(scope: Scope, input: unknown, id: string | undefined, setCookie: SetCookie) {
     const command = parseCommand(input);
     const key = this.sessions.key(scope, id);
@@ -191,7 +240,11 @@ export class DealerParticipant {
         if (!(await this.eligible(scope, command.referral))) return { state: 'invite' };
         const session = await this.sessions.start(
           scope,
-          { referral: command.referral, device: newApplicantHandle() },
+          {
+            referral: command.referral,
+            device: newApplicantHandle(),
+            ...(command.invitation && { invitation: command.invitation }),
+          },
           guestTtl
         );
         setCookie(session.id, guestTtl);
@@ -204,10 +257,15 @@ export class DealerParticipant {
     return this.sessions.withLock(key, async () => {
       const state = await this.sessions.get(key);
       if (!state) return rejectApplicant(409);
-      if (command.kind === 'entry' && command.referral && command.referral !== state.referral)
+      if (
+        command.kind === 'entry' &&
+        command.referral &&
+        (command.referral !== state.referral || command.invitation !== state.invitation)
+      )
         return rejectApplicant(409);
       if (command.kind === 'entry' || command.kind === 'status') {
         if (!state.auth) return { state: state.phone ? 'otp' : 'phone' };
+        if (!state.receipt && state.invitation) return this.claim(scope, key, state, {});
         if (!state.receipt || !state.phone) return { state: 'receipt' };
         await this.sessions.rate(scope, 'status', state.phone, 40, 60);
         return (await this.attach(scope, state, state.receipt)) ?? { state: 'receipt' };
@@ -228,10 +286,12 @@ export class DealerParticipant {
         const { token, seconds } = await this.fury.verifyOtp(scope, state, command.otp);
         const session = await this.sessions.rotate(scope, key, { ...state, auth: { token } }, seconds);
         setCookie(session.id, seconds);
-        return { state: 'receipt' };
+        return state.invitation ? { state: 'participantEntry' } : { state: 'receipt' };
       }
       if (!state.auth || !state.phone) return rejectApplicant(409);
+      if (command.kind === 'claim') return this.claim(scope, key, state, command.fields);
       if (command.kind === 'attach') {
+        if (state.invitation) return rejectApplicant(409);
         if (state.receipt && state.receipt !== command.receipt) return rejectApplicant(409);
         await this.sessions.rate(scope, 'attach', state.phone, 8, guestTtl);
         const view = await this.attach(scope, state, command.receipt);

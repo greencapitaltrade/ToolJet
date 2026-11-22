@@ -54,6 +54,14 @@ const docs = {
     dealerIntakeStart(referral_token: $referral_token, input: $input) { ${draftSelection} }
   }`,
   },
+  participant: {
+    field: 'dealerOwnerParticipant',
+    query: `mutation DealerOwnerParticipant($referralToken: String!, $draftId: ID!, $action: DealerOwnerParticipantAction!, $fields: JSON) {
+      dealerOwnerParticipant(referralToken: $referralToken, draftId: $draftId, action: $action, fields: $fields) {
+        status id version consents { id status name role }
+      }
+    }`,
+  },
   entity: {
     field: 'dealerEntityDetailsSave',
     query: `mutation DealerEntity($referral_token: String!, $pan: String!, $fields: DealerEntityDetailsInput!) {
@@ -82,7 +90,8 @@ type Operation =
   | { kind: 'verifyOtp'; otp: string }
   | { kind: 'lookup'; pan: string }
   | { kind: 'saveEntityDetails'; fields: Fields }
-  | { kind: 'start'; fields: Fields };
+  | { kind: 'start'; fields: Fields }
+  | { kind: 'ownerParticipant'; action: 'INVITE' | 'LIST' | 'ACCEPT'; fields: Payload };
 
 function operation(value: unknown): Operation {
   if (
@@ -111,6 +120,21 @@ function operation(value: unknown): Operation {
     /^[0-9]{4,8}$/.test(fields.otp)
   )
     return { kind: 'verifyOtp', otp: fields.otp };
+  if (value.operation === 'inviteParticipant' && keys.length === 1) {
+    const mobile = normalizeApplicantPhone(fields.mobile);
+    if (mobile) return { kind: 'ownerParticipant', action: 'INVITE', fields: { mobile } };
+  }
+  if (value.operation === 'participantRequests' && !keys.length)
+    return { kind: 'ownerParticipant', action: 'LIST', fields: {} };
+  if (
+    value.operation === 'acceptParticipant' &&
+    keys.length === 2 &&
+    typeof fields.consentId === 'string' &&
+    uuidPattern.test(fields.consentId) &&
+    Number.isSafeInteger(fields.version) &&
+    Number(fields.version) > 0
+  )
+    return { kind: 'ownerParticipant', action: 'ACCEPT', fields };
   if (value.operation === 'lookup' && keys.length === 1 && typeof fields.pan === 'string') {
     const pan = fields.pan.trim().toUpperCase();
     if (panPattern.test(pan)) return { kind: 'lookup', pan };
@@ -362,6 +386,50 @@ export class DealerOnboarding {
         return { state: 'pan' };
       }
       if (!state.auth) return rejectApplicant(409);
+      if (command.kind === 'ownerParticipant') {
+        if (!state.draftId || !state.phone) return rejectApplicant(409);
+        await this.sessions.rate(scope, 'owner-participant', state.phone, 20, 60);
+        const result = await this.fury.request(
+          scope,
+          docs.participant,
+          {
+            referralToken: state.referral,
+            draftId: state.draftId,
+            action: command.action,
+            fields: command.fields,
+          },
+          state
+        );
+        if (
+          command.action === 'INVITE' &&
+          result.status === 'invited' &&
+          typeof result.id === 'string' &&
+          uuidPattern.test(result.id)
+        )
+          return { state: 'participantInvite', invitationId: result.id, referralToken: state.referral };
+        if (command.action === 'ACCEPT' && result.status === 'accepted') return this.status(scope, state, key);
+        if (
+          command.action === 'LIST' &&
+          result.status === 'listed' &&
+          Number.isSafeInteger(result.version) &&
+          Array.isArray(result.consents)
+        ) {
+          const consents = result.consents
+            .filter(
+              (item: unknown) =>
+                object(item) &&
+                typeof item.id === 'string' &&
+                uuidPattern.test(item.id) &&
+                typeof item.status === 'string' &&
+                ['pending', 'accepted', 'expired', 'withdrawn'].includes(item.status) &&
+                typeof item.name === 'string' &&
+                typeof item.role === 'string'
+            )
+            .map(({ id, status, name, role }) => ({ id, status, name, role }));
+          return { state: 'participantRequests', version: result.version, consents };
+        }
+        return rejectApplicant(503);
+      }
       if (command.kind === 'lookup') {
         if (state.draftId && command.pan !== state.pan) return rejectApplicant(409);
         return this.lookup(scope, state, key, command.pan);
