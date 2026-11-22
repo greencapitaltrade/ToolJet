@@ -13,3 +13,7 @@ the shared short-lived applicant store.
   the image and requires fresh location, and Destiny registers the attachment.
 - Do not log or persist document data in the relay. Refer to
   `server/docs/dealer-onboarding.md` for the owner contracts.
+- The participant route has its own configuration, Redis scope and HttpOnly
+  cookie. It verifies OTP before attaching a consent receipt. Its trusted
+  downstream verifies the signed dealer parent and the authenticated receipt
+  actor before displaying status or running an own-person action.

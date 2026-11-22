@@ -1,5 +1,5 @@
 import { createHmac, randomBytes } from 'node:crypto';
-import { ApplicantScope, rejectApplicant } from './fury';
+import { ApplicantPurpose, ApplicantScope, rejectApplicant } from './fury';
 
 const sessionPattern = /^[A-Za-z0-9_-]{43}$/;
 const increment = "local n=redis.call('INCR',KEYS[1]); if n==1 then redis.call('EXPIRE',KEYS[1],ARGV[1]) end; return n";
@@ -13,7 +13,7 @@ export const newApplicantHandle = () => randomBytes(32).toString('base64url');
 export class ApplicantSessions<T> {
   constructor(
     private readonly redis: ApplicantRedis,
-    private readonly purpose: 'borrower' | 'dealer'
+    private readonly purpose: ApplicantPurpose
   ) {}
 
   private scopedKey(scope: ApplicantScope, kind: string, id: string) {

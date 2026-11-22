@@ -56,3 +56,24 @@ camera and eSign routes. Do not make that app public as a shortcut. Its browser
 gateway retains bearer state and broad private query envelopes. The public
 continuation requires explicit actions for the confirmed applicant role and
 current step and must be tested before activation.
+
+## Separate participant session
+
+`POST /api/dealer-onboarding/participant` uses its own opaque HttpOnly cookie
+and Redis keys. Keep `TOOLJET_DEALER_PARTICIPANT` unset until the participant
+workflow is ready. The managed configuration uses the same four connection
+settings as dealer onboarding plus an exact HTTPS `kycOrigin` and
+`signingOrigin`. Redirects from a different origin are refused.
+
+The route accepts `entry`, `requestOtp` and `verifyOtp` using the same shapes as
+dealer admission. After independent OTP, `attach` accepts `fields.consentId`.
+Fury and Destiny must match the receipt to the authenticated participant and
+the signed dealer parent before returning status. The server stores the receipt
+for the session. `status`, `startKyc`, `syncKyc`, `sign` and `withdraw` accept
+empty `fields`. Public responses contain only the projected status and allowed
+actions, plus an approved provider redirect when needed.
+
+The reference flow attaches an existing receipt after OTP. Owner approval and
+receipt delivery remain with the existing scoped consent process. Public receipt
+delivery, participant selfie transport and native viewer verification are
+required before enabling this route or publishing a participant app.

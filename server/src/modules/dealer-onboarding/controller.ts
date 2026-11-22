@@ -8,6 +8,8 @@ import { InitFeature } from '@modules/app/decorators/init-feature.decorator';
 import { InitModule } from '@modules/app/decorators/init-module';
 import { RedisService } from '@modules/redis/service';
 import { ApplicantHttpRequest, handleApplicantRequest } from '../applicant-session/http';
+import { ApplicantRedis } from '../applicant-session/store';
+import { DEALER_PARTICIPANT_ENV, DealerParticipant, parseDealerParticipantConfig } from './participant';
 import { parseDealerUpload } from './upload';
 import { DEALER_ONBOARDING_ENV, DealerOnboarding, parseDealerOnboardingConfig } from './relay';
 
@@ -16,12 +18,15 @@ import { DEALER_ONBOARDING_ENV, DealerOnboarding, parseDealerOnboardingConfig } 
 @UseGuards(FeatureAbilityGuard)
 export class DealerOnboardingController {
   private readonly relay: DealerOnboarding;
+  private readonly participant: DealerParticipant;
 
   constructor(
     private readonly config: ConfigService,
     redis: RedisService
   ) {
-    this.relay = new DealerOnboarding({ call: (command, ...args) => redis.getClient().call(command, ...args) });
+    const connection: ApplicantRedis = { call: (command, ...args) => redis.getClient().call(command, ...args) };
+    this.relay = new DealerOnboarding(connection);
+    this.participant = new DealerParticipant(connection);
   }
 
   @Post()
@@ -29,6 +34,19 @@ export class DealerOnboardingController {
   async handle(@Req() req: ApplicantHttpRequest, @Res() res: Response) {
     const settings = parseDealerOnboardingConfig(this.config.get<string>(DEALER_ONBOARDING_ENV));
     return handleApplicantRequest(req, res, settings, 'dealer', this.relay.run.bind(this.relay));
+  }
+
+  @Post('participant')
+  @InitFeature(FEATURE_KEY.DEALER_ONBOARDING)
+  async handleParticipant(@Req() req: ApplicantHttpRequest, @Res() res: Response) {
+    const settings = parseDealerParticipantConfig(this.config.get<string>(DEALER_PARTICIPANT_ENV));
+    return handleApplicantRequest(
+      req,
+      res,
+      settings,
+      'dealer-participant',
+      this.participant.run.bind(this.participant)
+    );
   }
   @Post('document')
   @InitFeature(FEATURE_KEY.DEALER_ONBOARDING)
