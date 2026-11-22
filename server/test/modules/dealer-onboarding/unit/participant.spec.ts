@@ -49,6 +49,7 @@ function setup() {
   };
   let owner = true;
   let status = 'accepted';
+  let selfieAvailable = false;
   let signUrl = 'https://signing.example.test/synthetic';
   const fetcher = jest.fn(async (_url: string, init: RequestInit) => {
     const { query, variables } = JSON.parse(init.body as string);
@@ -82,13 +83,16 @@ function setup() {
           dealerParticipantAttach: {
             status,
             kycStatus: 'verified',
-            selfieVerified: true,
+            selfieVerified: !selfieAvailable,
+            selfieAvailable,
             agreementPrepared: true,
             draftId: 'private-draft-id',
           },
         },
       });
     }
+    if (query.includes('dealerParticipantSelfie'))
+      return Response.json({ data: { dealerParticipantSelfie: { verified: true } } });
     if (!query.includes('dealerParticipantAction')) throw new Error('unrecognised fixed operation');
     return Response.json({
       data: { dealerParticipantAction: { status: 'requested', redirectUrl: signUrl, owner: 'private' } },
@@ -117,6 +121,10 @@ function setup() {
   return {
     invoke,
     login,
+    prepareSelfie: () => {
+      selfieAvailable = true;
+    },
+    uploadSelfie: (read: () => Promise<Buffer>) => service.uploadSelfie(scope, read, handle),
     requests,
     denyReceipt: () => {
       owner = false;
@@ -223,6 +231,10 @@ it('keeps participant credentials, cookies and telemetry separate from the deale
     body: '[REDACTED]',
     rawBody: '[REDACTED]',
   });
+  const uploadUrl = `${url}/selfie`;
+  expect(
+    sanitizeOAuthRequest({ url: uploadUrl, body: Buffer.from('synthetic selfie'), rawBody: 'synthetic selfie' })
+  ).toMatchObject({ body: '[REDACTED]', rawBody: '[REDACTED]' });
 });
 
 it('checks a handoff only after independent OTP and keeps its recovered receipt server-side', async () => {
@@ -241,6 +253,35 @@ it('checks a handoff only after independent OTP and keeps its recovered receipt 
   expect(
     requests()
       .filter(({ query }) => query.includes('dealerParticipantClaim'))
-      .at(-1).variables
+      .slice(-1)[0].variables
   ).toMatchObject({ referralToken, invitationId });
+});
+
+it('requires an approved, fresh participant receipt before reading and forwarding only one bounded JPEG', async () => {
+  const { invoke, login, requests, withdraw, prepareSelfie, uploadSelfie } = setup();
+  const jpeg = Buffer.from([255, 216, 255, 0, 255, 217]);
+  const read = jest.fn(async () => jpeg);
+  await expect(uploadSelfie(read)).rejects.toMatchObject({ status: 409 });
+  await login();
+  await expect(uploadSelfie(read)).rejects.toMatchObject({ status: 409 });
+  await invoke('attach', { consentId });
+  await expect(uploadSelfie(read)).rejects.toMatchObject({ status: 409 });
+  expect(read).not.toHaveBeenCalled();
+  prepareSelfie();
+  await expect(invoke('status')).resolves.toMatchObject({ actions: ['syncKyc', 'selfie', 'withdraw'] });
+  await expect(uploadSelfie(async () => Buffer.alloc(96 * 1024 + 1))).rejects.toMatchObject({ status: 413 });
+  await expect(uploadSelfie(async () => Buffer.from('not-jpeg'))).rejects.toMatchObject({ status: 422 });
+  await expect(uploadSelfie(read)).resolves.toEqual({ state: 'action', status: 'verified' });
+  const calls = requests().filter(({ query }) => query.includes('dealerParticipantSelfie'));
+  expect(calls).toHaveLength(1);
+  expect(calls[0].variables).toEqual({
+    consentId,
+    referralToken,
+    selfie: 'data:image/jpeg;base64,/9j/AP/Z',
+  });
+  expect(calls[0].headers.cookie).toMatch(/^authorization=header\..+; device=/);
+  expect(calls[0].headers['api-secret']).toBeUndefined();
+  withdraw();
+  await expect(uploadSelfie(read)).rejects.toMatchObject({ status: 409 });
+  expect(read).toHaveBeenCalledTimes(1);
 });

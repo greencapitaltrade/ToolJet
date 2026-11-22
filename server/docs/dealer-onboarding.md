@@ -88,5 +88,13 @@ verified mobile against the owner’s invitation. The relay stores the receipt
 in the participant session and continues through the same own-person actions.
 The separate existing-receipt entry remains available for compatibility.
 
-The staged app remains private. Participant selfie transport and native viewer
-verification are required before enabling this workflow.
+The participant relay offers selfie capture when Destiny confirms that the
+receipt and current Aadhaar evidence are eligible. The front-camera popup
+supplies a JPEG for `POST /api/dealer-onboarding/participant/selfie`. The
+endpoint accepts one JPEG up to 96 KiB with no form fields and uses the
+participant cookie and attached receipt. The image bypasses the native query
+and is never stored in the relay. Destiny rechecks consent, the case version
+and the same Aadhaar evidence after matching.
+
+The staged app remains private. Native viewer and provider verification are
+required before enabling this workflow.

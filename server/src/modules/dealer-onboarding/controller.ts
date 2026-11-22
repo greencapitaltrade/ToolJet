@@ -10,7 +10,7 @@ import { RedisService } from '@modules/redis/service';
 import { ApplicantHttpRequest, handleApplicantRequest } from '../applicant-session/http';
 import { ApplicantRedis } from '../applicant-session/store';
 import { DEALER_PARTICIPANT_ENV, DealerParticipant, parseDealerParticipantConfig } from './participant';
-import { parseDealerUpload } from './upload';
+import { parseDealerUpload, parseParticipantSelfie } from './upload';
 import { DEALER_ONBOARDING_ENV, DealerOnboarding, parseDealerOnboardingConfig } from './relay';
 
 @Controller('dealer-onboarding')
@@ -46,6 +46,20 @@ export class DealerOnboardingController {
       settings,
       'dealer-participant',
       this.participant.run.bind(this.participant)
+    );
+  }
+
+  @Post('participant/selfie')
+  @InitFeature(FEATURE_KEY.DEALER_ONBOARDING)
+  async uploadParticipantSelfie(@Req() req: ApplicantHttpRequest, @Res() res: Response) {
+    const settings = parseDealerParticipantConfig(this.config.get<string>(DEALER_PARTICIPANT_ENV));
+    return handleApplicantRequest(
+      req,
+      res,
+      settings,
+      'dealer-participant',
+      (scope, _body, id) => this.participant.uploadSelfie(scope, () => parseParticipantSelfie(req, res), id),
+      'multipart/form-data'
     );
   }
   @Post('document')

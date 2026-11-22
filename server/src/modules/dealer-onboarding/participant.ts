@@ -12,6 +12,7 @@ const referralPattern = /^v2[.][A-Za-z0-9_-]{39,1021}$/;
 const receiptPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const guestTtl = 600;
 const statuses = ['pending', 'accepted', 'expired', 'withdrawn'];
+export const maxParticipantSelfieBytes = 96 * 1024;
 const actions = { startKyc: 'START_KYC', syncKyc: 'SYNC_KYC', sign: 'SIGN', withdraw: 'WITHDRAW' } as const;
 type Action = keyof typeof actions;
 type Scope = ApplicantScope & { kycOrigin: string; signingOrigin: string };
@@ -36,7 +37,7 @@ const attachment = {
   field: 'dealerParticipantAttach',
   query: `mutation DealerParticipantAttach($referralToken: String!, $consentId: ID!) {
     dealerParticipantAttach(referralToken: $referralToken, consentId: $consentId) {
-      status kycStatus selfieVerified agreementPrepared
+      status kycStatus selfieAvailable selfieVerified agreementPrepared
     }
   }`,
 };
@@ -50,6 +51,13 @@ const ownAction = {
   field: 'dealerParticipantAction',
   query: `mutation DealerParticipantAction($consentId: ID!, $action: DealerParticipantAction!) {
     dealerParticipantAction(consentId: $consentId, action: $action) { status redirectUrl }
+  }`,
+};
+const ownSelfie = {
+  field: 'dealerParticipantSelfie',
+  timeoutMs: 50_000,
+  query: `mutation DealerParticipantSelfie($referralToken: String!, $consentId: ID!, $selfie: String!) {
+    dealerParticipantSelfie(referralToken: $referralToken, consentId: $consentId, selfie: $selfie) { verified }
   }`,
 };
 
@@ -143,13 +151,14 @@ function parseCommand(input: unknown): Command {
 function participantView(result: Input) {
   const { status, kycStatus } = result;
   if (!validStatus(status) || !statuses.includes(status)) return rejectApplicant(503);
-  const allowed: Action[] = [];
+  const allowed: Array<Action | 'selfie'> = [];
   const accepted = status === 'accepted';
   const selfieVerified = accepted && result.selfieVerified === true;
   const agreementPrepared = accepted && result.agreementPrepared === true;
   if (accepted) {
     if (kycStatus !== 'verified') allowed.push('startKyc');
     allowed.push('syncKyc');
+    if (kycStatus === 'verified' && !selfieVerified && result.selfieAvailable === true) allowed.push('selfie');
     if (kycStatus === 'verified' && selfieVerified && agreementPrepared) allowed.push('sign');
   }
   if (accepted || status === 'pending') allowed.push('withdraw');
@@ -228,6 +237,41 @@ export class DealerParticipant {
     if (!view) return rejectApplicant(409);
     if (!state.receipt) await this.sessions.save(key, { ...state, receipt: result.id });
     return view;
+  }
+
+  async uploadSelfie(scope: Scope, read: () => Promise<Buffer>, id: string | undefined) {
+    const key = this.sessions.key(scope, id);
+    if (!key) return rejectApplicant(409);
+    return this.sessions.withLock(key, async () => {
+      const state = await this.sessions.get(key);
+      if (!state?.auth || !state.phone || !state.receipt) return rejectApplicant(409);
+      await this.sessions.rate(scope, 'selfie', state.phone, 5, 60);
+      const current = await this.attach(scope, state, state.receipt);
+      if (!current?.actions.includes('selfie')) return rejectApplicant(409);
+      const file = await read();
+      if (file.length > maxParticipantSelfieBytes) return rejectApplicant(413);
+      if (
+        file.length < 5 ||
+        file[0] !== 0xff ||
+        file[1] !== 0xd8 ||
+        file[2] !== 0xff ||
+        file[file.length - 2] !== 0xff ||
+        file[file.length - 1] !== 0xd9
+      )
+        return rejectApplicant(422);
+      const result = await this.fury.request(
+        scope,
+        ownSelfie,
+        {
+          referralToken: state.referral,
+          consentId: state.receipt,
+          selfie: `data:image/jpeg;base64,${file.toString('base64')}`,
+        },
+        state
+      );
+      if (result.verified !== true) return rejectApplicant(503);
+      return { state: 'action', status: 'verified' };
+    });
   }
 
   async run(scope: Scope, input: unknown, id: string | undefined, setCookie: SetCookie) {
