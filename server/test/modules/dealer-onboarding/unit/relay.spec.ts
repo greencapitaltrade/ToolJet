@@ -75,6 +75,8 @@ function setup() {
         },
       });
     }
+    if (query.includes('dealerOwnerParticipant'))
+      return Response.json({ data: { dealerOwnerParticipant: { status: 'invited', id: draft.id } } });
     if (query.includes('dealerPanLookup'))
       return Response.json({
         data: {
@@ -237,4 +239,31 @@ it('attaches only projected evidence under the verified cookie and server-select
     referral_token: referralToken,
   });
   expect(await options.body.get('file').text()).toBe(pdf.toString());
+});
+
+it('shares a participant link only from the verified owner draft without browser parent or actor', async () => {
+  const { call, fetcher } = setup();
+  await call('entry', {}, { referralToken });
+  await expect(call('inviteParticipant', { mobile: '9999900002' })).rejects.toMatchObject({ status: 409 });
+  await call('requestOtp', { phone: '9999900001' });
+  await call('verifyOtp', { otp: '123456' });
+  await call('lookup', { pan: 'AAAFA1234A' });
+  await call('start', details);
+  await expect(call('inviteParticipant', { mobile: '9999900002', draftId: 'foreign' })).rejects.toMatchObject({
+    status: 400,
+  });
+  await expect(call('inviteParticipant', { mobile: '9999900002' })).resolves.toEqual({
+    state: 'participantInvite',
+    invitationId: draft.id,
+    referralToken,
+  });
+  const sent = fetcher.mock.calls
+    .map(([, { body }]) => JSON.parse(body))
+    .find(({ query }) => query.includes('dealerOwnerParticipant'));
+  expect(sent.variables).toEqual({
+    action: 'INVITE',
+    draftId: draft.id,
+    referralToken,
+    fields: { mobile: '9999900002' },
+  });
 });
