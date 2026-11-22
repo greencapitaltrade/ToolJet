@@ -9,6 +9,7 @@ import { getSubpath } from '@/_helpers/routes';
 import { ERROR_TYPES } from '@/_helpers/constants';
 import { updateCurrentSession } from '@/_helpers/authorizeWorkspace';
 import { SSOAuthModule } from '@/modules/common/components';
+import { isConfiguredOidcEnabled } from '@/modules/common/components/SSOAuthModule/configuredOidc';
 import LoginPageRightPanel from '@/modules/auth/components/LoginPageRightPanel/LoginPageRightPanel';
 import { LoginForm, MfaVerifyForm } from '../LoginPage/components';
 import { retrieveWhiteLabelText } from '@white-label/whiteLabelling';
@@ -74,7 +75,7 @@ const AppLoginPage = () => {
           ? configs?.automatic_sso_login
           : window.public_config?.AUTOMATIC_SSO_LOGIN === 'true';
 
-      if (shouldAttemptAutoSSO) {
+      if (shouldAttemptAutoSSO && !isConfiguredOidcEnabled(config.organizationId)) {
         const hasEnabledOidc = Array.isArray(configs?.openid)
           ? configs.openid.some((c) => c.enabled)
           : configs?.openid?.enabled;

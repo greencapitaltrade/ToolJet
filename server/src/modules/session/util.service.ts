@@ -37,6 +37,7 @@ import { EncryptionService } from '@modules/encryption/service';
 import { OnboardingStatus } from '@modules/onboarding/constants';
 import { RequestContext } from '@modules/request-context/service';
 import { SessionType } from '@modules/external-apis/constants';
+import { getConfiguredOidcSettings, type OidcIdentity } from '@modules/auth/oauth/configured-oidc.config';
 
 @Injectable()
 export class SessionUtilService {
@@ -95,7 +96,8 @@ export class SessionUtilService {
     manager?: EntityManager,
     invitedOrganizationId?: string,
     extraData?: any,
-    isPatLogin?: boolean
+    isPatLogin?: boolean,
+    oidcIdentity?: OidcIdentity
   ): Promise<any> {
     return await dbTransactionWrap(async (manager: EntityManager) => {
       const request = RequestContext?.currentContext?.req;
@@ -115,6 +117,7 @@ export class SessionUtilService {
           user.passwordExpiry
         );
         sessionId = session.id;
+        if (oidcIdentity) await manager.update(UserSessions, { id: session.id }, { oidcIdentity });
       }
 
       // Only actual login callers set this marker; workspace switching never invents new proof.
@@ -206,6 +209,27 @@ export class SessionUtilService {
 
       return decamelizeKeys(responsePayload);
     }, manager);
+  }
+
+  async getOidcActor(user: Pick<User, 'id' | 'sessionId' | 'organizationId'>): Promise<OidcIdentity> {
+    const settings = getConfiguredOidcSettings();
+    if (!settings || !user?.id || !user.sessionId || user.organizationId !== settings.workspaceId) {
+      throw new UnauthorizedException();
+    }
+    const session = await dbTransactionWrap((manager: EntityManager) =>
+      manager.findOne(UserSessions, {
+        where: {
+          id: user.sessionId,
+          userId: user.id,
+          sessionType: SessionType.USER,
+          expiry: MoreThanOrEqual(new Date()),
+        },
+        select: { oidcIdentity: true },
+      })
+    );
+    const identity = session?.oidcIdentity;
+    if (identity?.issuer !== settings.issuer || !identity.sub) throw new UnauthorizedException();
+    return { issuer: identity.issuer, sub: identity.sub };
   }
 
   async getPermissionDataToAuthorize(

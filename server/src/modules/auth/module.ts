@@ -25,6 +25,8 @@ import { UserMfaRepository } from './mfa/repository';
 import { TotpUtilService } from './mfa/totp-util.service';
 import { EncryptionModule } from '@modules/encryption/module';
 import { CustomDomainsModule } from '@modules/custom-domains/module';
+import { ConfiguredOidcController } from './oauth/configured-oidc.controller';
+import { ConfiguredOidcService } from './oauth/configured-oidc.service';
 
 @Module({})
 export class AuthModule extends SubModule {
@@ -86,7 +88,9 @@ export class AuthModule extends SubModule {
           inject: [ConfigService],
         }),
       ],
-      controllers: isMainImport ? [AuthController, OauthController, WebsiteAuthController, WebsiteOtpController] : [],
+      controllers: isMainImport
+        ? [AuthController, OauthController, ConfiguredOidcController, WebsiteAuthController, WebsiteOtpController]
+        : [],
       providers: [
         AuthService,
         UserRepository,
@@ -96,6 +100,7 @@ export class AuthModule extends SubModule {
         OrganizationUsersRepository,
         AuthUtilService,
         OauthService,
+        ConfiguredOidcService,
         SamlService,
         GitOAuthService,
         GoogleOAuthService,

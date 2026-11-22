@@ -25,7 +25,8 @@ recorded in `User.source` (`SOURCE` enum, `@modules/users/constants/lifecycle.ts
 | `util.service.ts` | `validateLoginUser()` + shared login/signup helpers; the module's DI hub |
 | `oauth/controller.ts` | `@Controller(['oauth','sso'])`: `sign-in/:configId`, `sign-in/common/:ssoType`, `openid/configs/:configId`, `saml/configs/:configId`, `saml/:configId` |
 | `oauth/service.ts` | SSO sign-in orchestration (`OauthService`) |
-| `oauth/util-services/` | per-provider services; CE implements only `google-oauth` + `git-oauth` |
+| `oauth/util-services/` | per-provider services for native Google and GitHub (CE), plus enterprise provider interfaces |
+| `oauth/configured-oidc.*` | CE deployment-scoped OpenID Connect relying party for a single pinned issuer and workspace |
 | `website/` | `@Controller('ai/onboarding')` + `@Controller('otp')` — AI onboarding signup, cookies, OTP |
 | `mfa/repository.ts`, `scheduler.ts` | `UserMfaRepository`; `MfaCleanupScheduler` deletes MFA rows >48h old (daily 5AM) |
 | `guards/` | `AuthorizeWorkspaceGuard`, `SwitchWorkspaceAuthGuard`, `WorkflowAuthGuard`, `ExternalApiSecurityGuard`, `OrganizationIdValidationGuard` |
@@ -50,6 +51,7 @@ recorded in `User.source` (`SOURCE` enum, `@modules/users/constants/lifecycle.ts
 - Password-domain allow/restrict lists validated on every form login (workspace overrides instance); skipped for super admins.
 - `forgotPassword` silently succeeds for unknown emails (username-enumeration protection).
 - OIDC PKCE: code verifier rides the `oidc_code_verifier` cookie; token-exchange `redirect_uri` host must match the authorization request (custom-domain aware).
+- Configured CE OIDC stores a one-time PKCE challenge in `sso_responses` and an issuer/subject stamp on the native session. See `server/docs/configured-oidc.md`.
 - Registering with `isMainImport=false` yields providers but no controllers — prevents duplicate route mounting when other modules import AuthModule.
 
 ## Related modules

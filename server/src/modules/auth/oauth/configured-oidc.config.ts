@@ -1,0 +1,76 @@
+import { validate as isUuid } from 'uuid';
+
+export type OidcIdentity = { issuer: string; sub: string };
+
+export type ConfiguredOidcSettings = {
+  issuer: string;
+  clientId: string;
+  clientSecret: string;
+  workspaceId: string;
+  origin: string;
+  subpath: string;
+  redirectUri: string;
+};
+
+export function isHttpsUrl(value?: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' && !url.username && !url.password && !url.hash;
+  } catch {
+    return false;
+  }
+}
+
+export function getConfiguredOidcSettings(env = process.env): ConfiguredOidcSettings | null {
+  const {
+    TOOLJET_EDITION = 'ce',
+    TOOLJET_OIDC_ISSUER: issuer,
+    TOOLJET_OIDC_CLIENT_ID: clientId,
+    TOOLJET_OIDC_CLIENT_SECRET: clientSecret,
+    TOOLJET_OIDC_WORKSPACE_ID: workspaceId,
+    TOOLJET_HOST: host,
+    SUB_PATH: rawSubpath = '',
+  } = env;
+
+  if (
+    TOOLJET_EDITION.toLowerCase() !== 'ce' ||
+    !isHttpsUrl(issuer) ||
+    new URL(issuer).search ||
+    !clientId ||
+    !clientSecret ||
+    !isUuid(workspaceId) ||
+    !isHttpsUrl(host)
+  ) {
+    return null;
+  }
+  const base = new URL(host);
+  if (base.pathname !== '/' || base.search || (rawSubpath && !/^\/(?:[\w-]+\/)*$/.test(rawSubpath))) {
+    return null;
+  }
+  const subpath = rawSubpath.replace(/\/$/, '');
+  return {
+    issuer,
+    clientId,
+    clientSecret,
+    workspaceId: workspaceId.toLowerCase(),
+    origin: base.origin,
+    subpath,
+    redirectUri: `${base.origin}${subpath}/api/oauth/oidc/callback`,
+  };
+}
+
+export function oidcReturnPath(value: unknown, settings: ConfiguredOidcSettings): string {
+  const fallback = `${settings.subpath}/`;
+  if (typeof value !== 'string' || !value.startsWith('/') || value.includes('\\')) return fallback;
+  if ([...value].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)) return fallback;
+
+  try {
+    const url = new URL(value, settings.origin);
+    if (url.origin === settings.origin && url.pathname.startsWith(`${settings.subpath}/applications/`)) {
+      return `${url.pathname}${url.search}${url.hash}`;
+    }
+  } catch {
+    return fallback;
+  }
+  return fallback;
+}

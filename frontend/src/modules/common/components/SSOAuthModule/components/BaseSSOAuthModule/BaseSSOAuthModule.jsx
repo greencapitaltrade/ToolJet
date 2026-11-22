@@ -1,8 +1,11 @@
 import React from 'react';
 import { GoogleSSOLoginButton, GitSSOLoginButton } from '..';
+import SSOButtonWrapper from '../SSOButtonWrapper';
+import { isConfiguredOidcEnabled, startConfiguredOidc } from '../../configuredOidc';
 
 const BaseSSOAuthModule = ({
   configs,
+  organizationId,
   setRedirectUrlToCookie,
   buttonText,
   setSignupOrganizationDetails,
@@ -12,6 +15,19 @@ const BaseSSOAuthModule = ({
 }) => {
   return (
     <>
+      {isConfiguredOidcEnabled(organizationId) && (
+        <div className="login-sso-wrapper">
+          <SSOButtonWrapper
+            onClick={(event) => {
+              event.preventDefault();
+              startConfiguredOidc(redirectTo);
+            }}
+            icon="assets/images/sso-buttons/openid.svg"
+            text={`${buttonText} OpenID Connect`}
+            dataCy="configured-oidc-sso-button"
+          />
+        </div>
+      )}
       {configs?.git?.enabled && (
         <div className="login-sso-wrapper">
           <GitSSOLoginButton

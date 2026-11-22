@@ -2,6 +2,7 @@ import { Entity, Column, PrimaryGeneratedColumn, CreateDateColumn, JoinColumn, B
 import { User } from './user.entity';
 import { UserPersonalAccessToken } from './user_personal_access_tokens.entity';
 import { SessionType } from '@modules/external-apis/constants';
+import type { OidcIdentity } from '@modules/auth/oauth/configured-oidc.config';
 
 @Entity({ name: 'user_sessions' })
 export class UserSessions extends BaseEntity {
@@ -29,6 +30,9 @@ export class UserSessions extends BaseEntity {
 
   @Column({ name: 'session_type', type: 'enum', enum: SessionType, default: 'user' })
   sessionType: SessionType.USER | SessionType.PAT;
+
+  @Column({ name: 'oidc_identity', type: 'jsonb', nullable: true, select: false })
+  oidcIdentity: OidcIdentity | null;
 
   @ManyToOne(() => UserPersonalAccessToken, { nullable: true, onDelete: 'SET NULL' })
   @JoinColumn({ name: 'pat_id' })

@@ -8,6 +8,7 @@ import { validateEmail, validatePassword } from '@/_helpers/utils';
 import { OnboardingUIWrapper, OnboardingFormInsideWrapper } from '@/modules/onboarding/components';
 import { FormTextInput, PasswordInput, SubmitButton, FormHeader, SSOAuthModule } from '@/modules/common/components';
 import { redirectToDashboard } from '@/_helpers/routes';
+import { isConfiguredOidcEnabled } from '@/modules/common/components/SSOAuthModule/configuredOidc';
 import './resources/styles/login-form.styles.scss';
 import SepratorComponent from '@/modules/common/components/SepratorComponent';
 import '@/McpOAuth/workspaceLogin.scss';
@@ -43,6 +44,7 @@ const LoginForm = ({
     : configs?.openid?.enabled;
 
   const isAnySSOEnabled =
+    isConfiguredOidcEnabled(organizationId) ||
     configs?.google?.enabled ||
     configs?.git?.enabled ||
     configs?.ldap?.enabled ||
@@ -219,6 +221,7 @@ const LoginForm = ({
               {isAnySSOEnabled && configs?.form?.enabled && <SepratorComponent />}
               <SSOAuthModule
                 configs={configs}
+                organizationId={organizationId}
                 organizationSlug={paramOrganizationSlug}
                 setRedirectUrlToCookie={setRedirectUrlToCookie}
                 buttonText="Sign in with"

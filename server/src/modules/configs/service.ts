@@ -4,6 +4,7 @@ import { Injectable } from '@nestjs/common';
 import { IConfigService } from './interfaces/IService';
 import { getMcpOAuthPublicConfig } from './mcp-oauth-public-config';
 import { InMemoryCacheService } from '@modules/inMemoryCache/in-memory-cache.service';
+import { getConfiguredOidcSettings } from '@modules/auth/oauth/configured-oidc.config';
 
 // Instance-wide (not per-user/per-org) settings + env vars. Concurrent calls (the bootstrap burst on
 // page load) share one lookup, which is dropped as soon as it settles: a setting saved through the API,
@@ -56,7 +57,12 @@ export class ConfigService implements IConfigService {
       publicConfigVars.ENABLE_MARKETPLACE_DEV_MODE = process.env.ENABLE_MARKETPLACE_DEV_MODE || 'false';
     }
 
-    return { ...publicConfigVars, ...getMcpOAuthPublicConfig(process.env) };
+    const configuredOidcWorkspaceId = getConfiguredOidcSettings()?.workspaceId;
+    return {
+      ...publicConfigVars,
+      ...getMcpOAuthPublicConfig(process.env),
+      ...(configuredOidcWorkspaceId && { CONFIGURED_OIDC_WORKSPACE_ID: configuredOidcWorkspaceId }),
+    };
   }
 
   private fetchDefaultConfig() {
