@@ -11,6 +11,10 @@ export const FEATURES: FeaturesConfig = {
       isPublic: true,
       skipAuditLogs: true,
     },
+    [FEATURE_KEY.DEALER_ONBOARDING]: {
+      isPublic: true,
+      skipAuditLogs: true,
+    },
     [FEATURE_KEY.ROOT]: {
       isPublic: true,
     },
