@@ -54,6 +54,7 @@ function setup() {
   let created = false;
   let entityFields: string[] = [];
   let evidence: unknown[] = [];
+  let completionStage = 'bank_verification_required';
   const fetcher = jest.fn(async (_url, request) => {
     if (request.body instanceof FormData) return Response.json({ attached: true });
     const { query, variables } = JSON.parse(request.body);
@@ -77,6 +78,12 @@ function setup() {
     }
     if (query.includes('dealerOwnerParticipant'))
       return Response.json({ data: { dealerOwnerParticipant: { status: 'invited', id: draft.id } } });
+    if (query.includes('dealerOwnerCompletion'))
+      return Response.json({ data: { dealerOwnerCompletion: {
+        stage: completionStage, version: 5,
+        actions: completionStage === 'bank_verification_required' ? ['VERIFY_BANK'] : [],
+        signer: 'private',
+      } } });
     if (query.includes('dealerPanLookup'))
       return Response.json({
         data: {
@@ -103,6 +110,7 @@ function setup() {
     call,
     fetcher,
     cookie: () => session,
+    setCompletionStage: (stage: string) => { completionStage = stage; },
     setEvidence: (actions: unknown[]) => {
       evidence = actions;
     },
@@ -111,6 +119,30 @@ function setup() {
     },
   };
 }
+
+it('uses only current server-authorized dealer completion actions and versions', async () => {
+  const fixture = setup();
+  await fixture.call('entry', {}, { referralToken });
+  await expect(fixture.call('agreementStatus')).rejects.toMatchObject({ status: 409 });
+  await fixture.call('requestOtp', { phone: '9999900001' });
+  await fixture.call('verifyOtp', { otp: '123456' });
+  await fixture.call('lookup', { pan: 'AAAFA1234A' });
+  await fixture.call('start', details);
+  await expect(fixture.call('agreementStatus')).resolves.toEqual({
+    state: 'dealerCompletion', stage: 'bank_verification_required', actions: ['verifyBank'],
+  });
+  await expect(fixture.call('freezeAgreement', { version: 5 })).rejects.toMatchObject({ status: 400 });
+  await expect(fixture.call('freezeAgreement')).rejects.toMatchObject({ status: 409 });
+  await fixture.call('verifyBank');
+  const updates = fixture.fetcher.mock.calls
+    .map(([, request]) => JSON.parse(request.body))
+    .filter((call) => call.query.includes('dealerOwnerCompletion') && call.variables.action !== 'STATUS');
+  expect(updates.map((call) => call.variables)).toEqual([
+    { draftId: draft.id, referralToken, action: 'VERIFY_BANK', version: 5 },
+  ]);
+  fixture.setCompletionStage('submitted');
+  await expect(fixture.call('verifyBank')).rejects.toMatchObject({ status: 409 });
+});
 
 it('verifies the invite and OTP, saves PAN server-side, creates under the invite and resumes only its draft', async () => {
   const { call, cookie, service, fetcher } = setup();
