@@ -25,3 +25,7 @@ the shared short-lived applicant store.
   in that request only. The bound session and Destiny determine the draft,
   policy, version and available forms. Never add dossier fields to native
   query parameters or the applicant session.
+- Owner signing uses the current completion version, the verified owner
+  session, and the matching dealer participant configuration's exact HTTPS
+  signing origin. Keep the provider link out of session storage and return
+  it only on an explicit own-sign action.

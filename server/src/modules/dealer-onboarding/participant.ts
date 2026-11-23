@@ -163,6 +163,17 @@ function participantView(result: Input) {
   };
 }
 
+export function dealerProviderRedirect(redirectUrl: unknown, origin: string | null | undefined) {
+  if (!origin || typeof redirectUrl !== 'string' || redirectUrl.length > 4096) return rejectApplicant(503);
+  try {
+    const url = new URL(redirectUrl);
+    if (url.origin === origin && !url.username && !url.password) return url.href;
+  } catch {
+    // Use the same public failure for malformed and unconfigured redirects.
+  }
+  return rejectApplicant(503);
+}
+
 function actionView(scope: Scope, action: Action, result: Input) {
   const { status, redirectUrl } = result;
   if (!validStatus(status) || (action === 'sign' && (status !== 'requested' || !redirectUrl)))
@@ -170,14 +181,7 @@ function actionView(scope: Scope, action: Action, result: Input) {
   const view = { state: 'action', status };
   if (redirectUrl === undefined || redirectUrl === null) return view;
   const origin = action === 'sign' ? scope.signingOrigin : action === 'startKyc' ? scope.kycOrigin : null;
-  if (!origin || typeof redirectUrl !== 'string' || redirectUrl.length > 4096) return rejectApplicant(503);
-  try {
-    const url = new URL(redirectUrl);
-    if (url.origin === origin && !url.username && !url.password) return { ...view, redirectUrl: url.href };
-  } catch {
-    // Use the same public failure for malformed and unconfigured redirects.
-  }
-  return rejectApplicant(503);
+  return { ...view, redirectUrl: dealerProviderRedirect(redirectUrl, origin) };
 }
 
 export class DealerParticipant {

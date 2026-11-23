@@ -33,7 +33,8 @@ export class DealerOnboardingController {
   @Post()
   @InitFeature(FEATURE_KEY.DEALER_ONBOARDING)
   async handle(@Req() req: ApplicantHttpRequest, @Res() res: Response) {
-    const settings = parseDealerOnboardingConfig(this.config.get<string>(DEALER_ONBOARDING_ENV));
+    const participant = parseDealerParticipantConfig(this.config.get<string>(DEALER_PARTICIPANT_ENV));
+    const settings = parseDealerOnboardingConfig(this.config.get<string>(DEALER_ONBOARDING_ENV), participant);
     return handleApplicantRequest(req, res, settings, 'dealer', this.relay.run.bind(this.relay));
   }
 
