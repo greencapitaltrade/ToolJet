@@ -7,12 +7,12 @@ import { MODULES } from '@modules/app/constants/modules';
 import { InitFeature } from '@modules/app/decorators/init-feature.decorator';
 import { InitModule } from '@modules/app/decorators/init-module';
 import { RedisService } from '@modules/redis/service';
-import { rejectApplicant } from '../applicant-session/fury';
+import { exactHttpsOrigin, rejectApplicant } from '../applicant-session/fury';
 import { ApplicantHttpRequest, handleApplicantRequest } from '../applicant-session/http';
 import { ApplicantRedis } from '../applicant-session/store';
 import { DEALER_PARTICIPANT_ENV, DealerParticipant, parseDealerParticipantConfig } from './participant';
-import { parseDealerUpload } from './upload';
-import { DEALER_ONBOARDING_ENV, DealerOnboarding, parseDealerOnboardingConfig } from './relay';
+import { parseDealerUpload, parseDealerSelfie } from './upload';
+import { DEALER_ONBOARDING_ENV, DEALER_OWNER_KYC_ORIGIN, DealerOnboarding, parseDealerOnboardingConfig } from './relay';
 
 @Controller('dealer-onboarding')
 @InitModule(MODULES.ROOT)
@@ -59,6 +59,45 @@ export class DealerOnboardingController {
       this.participant.run.bind(this.participant)
     );
   }
+
+  @Post('participant/selfie')
+  @InitFeature(FEATURE_KEY.DEALER_ONBOARDING)
+  async uploadParticipantSelfie(@Req() req: ApplicantHttpRequest, @Res() res: Response) {
+    const settings = parseDealerParticipantConfig(this.config.get<string>(DEALER_PARTICIPANT_ENV));
+    return handleApplicantRequest(
+      req,
+      res,
+      settings,
+      'dealer-participant',
+      (scope, _body, id) => this.participant.uploadSelfie(scope, () => parseDealerSelfie(req, res), id),
+      'multipart/form-data'
+    );
+  }
+  private ownerKycSettings() {
+    const settings = parseDealerOnboardingConfig(this.config.get<string>(DEALER_ONBOARDING_ENV));
+    const kycOrigin = this.config.get<string>(DEALER_OWNER_KYC_ORIGIN);
+    return settings && exactHttpsOrigin(kycOrigin) ? { ...settings, kycOrigin } : null;
+  }
+
+  @Post('identity')
+  @InitFeature(FEATURE_KEY.DEALER_ONBOARDING)
+  async ownerKyc(@Req() req: ApplicantHttpRequest, @Res() res: Response) {
+    return handleApplicantRequest(req, res, this.ownerKycSettings(), 'dealer', this.relay.ownerKyc.bind(this.relay));
+  }
+
+  @Post('identity/selfie')
+  @InitFeature(FEATURE_KEY.DEALER_ONBOARDING)
+  async uploadOwnerSelfie(@Req() req: ApplicantHttpRequest, @Res() res: Response) {
+    return handleApplicantRequest(
+      req,
+      res,
+      this.ownerKycSettings(),
+      'dealer',
+      (scope, _body, id) => this.relay.uploadOwnerSelfie(scope, () => parseDealerSelfie(req, res), id),
+      'multipart/form-data'
+    );
+  }
+
   @Post('document')
   @InitFeature(FEATURE_KEY.DEALER_ONBOARDING)
   async upload(@Req() req: ApplicantHttpRequest, @Res() res: Response) {

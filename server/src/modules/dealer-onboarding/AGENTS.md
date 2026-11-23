@@ -25,3 +25,8 @@ the shared short-lived applicant store.
   in that request only. The bound session and Destiny determine the draft,
   policy, version and available forms. Never add dossier fields to native
   query parameters or the applicant session.
+- Dealer owner identity uses the existing dealer session and separate
+  same-origin identity routes. The relay obtains the current owner status from
+  Fury before an action or binary upload. No owner, signer, version or provider
+  URL comes from the browser. The owner and participant routes share the
+  bounded JPEG parser.

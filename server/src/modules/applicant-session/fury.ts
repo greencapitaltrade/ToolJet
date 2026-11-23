@@ -43,6 +43,14 @@ export function applicantScope(value: Payload): ApplicantScope | null {
   }
 }
 
+export function exactHttpsOrigin(value: unknown): value is string {
+  try {
+    return typeof value === 'string' && value.startsWith('https://') && new URL(value).origin === value;
+  } catch {
+    return false;
+  }
+}
+
 export class ApplicantRequestError extends Error {
   constructor(readonly status: number) {
     super('Applicant request unavailable');
@@ -72,7 +80,7 @@ export class ApplicantFury {
   /** The adapter supplies the fixed document. This never forwards browser headers or arbitrary GraphQL. */
   async request(
     scope: ApplicantScope,
-    operation: { field: string; query: string },
+    operation: { field: string; query: string; timeoutMs?: number },
     variables: Payload,
     identity?: ApplicantIdentity
   ): Promise<Payload> {
@@ -80,7 +88,7 @@ export class ApplicantFury {
       method: 'POST',
       redirect: 'error',
       cache: 'no-store',
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(operation.timeoutMs ?? 5000),
       headers: {
         'Content-Type': 'application/json',
         ...(identity?.device && { device: identity.device }),

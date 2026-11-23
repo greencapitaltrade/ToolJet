@@ -2,10 +2,12 @@ import {
   ApplicantFury,
   ApplicantScope,
   applicantScope,
+  exactHttpsOrigin,
   normalizeApplicantPhone,
   rejectApplicant,
 } from '../applicant-session/fury';
 import { ApplicantRedis, ApplicantSessions, newApplicantHandle } from '../applicant-session/store';
+import { dealerSelfieData } from './selfie';
 
 export const DEALER_PARTICIPANT_ENV = 'TOOLJET_DEALER_PARTICIPANT';
 const referralPattern = /^v2[.][A-Za-z0-9_-]{39,1021}$/;
@@ -36,7 +38,7 @@ const attachment = {
   field: 'dealerParticipantAttach',
   query: `mutation DealerParticipantAttach($referralToken: String!, $consentId: ID!) {
     dealerParticipantAttach(referralToken: $referralToken, consentId: $consentId) {
-      status kycStatus selfieVerified agreementPrepared
+      status kycStatus selfieAvailable selfieVerified agreementPrepared
     }
   }`,
 };
@@ -52,18 +54,17 @@ const ownAction = {
     dealerParticipantAction(consentId: $consentId, action: $action) { status redirectUrl }
   }`,
 };
+const ownSelfie = {
+  field: 'dealerParticipantSelfie',
+  timeoutMs: 50_000,
+  query: `mutation DealerParticipantSelfie($referralToken: String!, $consentId: ID!, $selfie: String!) {
+    dealerParticipantSelfie(referralToken: $referralToken, consentId: $consentId, selfie: $selfie) { verified }
+  }`,
+};
 
 const isObject = (value: unknown): value is Input =>
   Boolean(value && typeof value === 'object' && !Array.isArray(value));
 const validStatus = (value: unknown): value is string => typeof value === 'string' && /^[a-z_]{1,32}$/.test(value);
-
-function exactHttpsOrigin(value: unknown): value is string {
-  try {
-    return typeof value === 'string' && value.startsWith('https://') && new URL(value).origin === value;
-  } catch {
-    return false;
-  }
-}
 
 export function parseDealerParticipantConfig(value: string | undefined): Scope | null {
   try {
@@ -143,13 +144,14 @@ function parseCommand(input: unknown): Command {
 function participantView(result: Input) {
   const { status, kycStatus } = result;
   if (!validStatus(status) || !statuses.includes(status)) return rejectApplicant(503);
-  const allowed: Action[] = [];
+  const allowed: Array<Action | 'selfie'> = [];
   const accepted = status === 'accepted';
   const selfieVerified = accepted && result.selfieVerified === true;
   const agreementPrepared = accepted && result.agreementPrepared === true;
   if (accepted) {
     if (kycStatus !== 'verified') allowed.push('startKyc');
     allowed.push('syncKyc');
+    if (kycStatus === 'verified' && !selfieVerified && result.selfieAvailable === true) allowed.push('selfie');
     if (kycStatus === 'verified' && selfieVerified && agreementPrepared) allowed.push('sign');
   }
   if (accepted || status === 'pending') allowed.push('withdraw');
@@ -228,6 +230,31 @@ export class DealerParticipant {
     if (!view) return rejectApplicant(409);
     if (!state.receipt) await this.sessions.save(key, { ...state, receipt: result.id });
     return view;
+  }
+
+  async uploadSelfie(scope: Scope, read: () => Promise<Buffer>, id: string | undefined) {
+    const key = this.sessions.key(scope, id);
+    if (!key) return rejectApplicant(409);
+    return this.sessions.withLock(key, async () => {
+      const state = await this.sessions.get(key);
+      if (!state?.auth || !state.phone || !state.receipt) return rejectApplicant(409);
+      await this.sessions.rate(scope, 'selfie', state.phone, 5, 60);
+      const current = await this.attach(scope, state, state.receipt);
+      if (!current?.actions.includes('selfie')) return rejectApplicant(409);
+      const selfie = dealerSelfieData(await read());
+      const result = await this.fury.request(
+        scope,
+        ownSelfie,
+        {
+          referralToken: state.referral,
+          consentId: state.receipt,
+          selfie,
+        },
+        state
+      );
+      if (result.verified !== true) return rejectApplicant(503);
+      return { state: 'action', status: 'verified' };
+    });
   }
 
   async run(scope: Scope, input: unknown, id: string | undefined, setCookie: SetCookie) {

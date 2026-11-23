@@ -359,3 +359,76 @@ it('shares a participant link only from the verified owner draft without browser
     fields: { mobile: '9999900002' },
   });
 });
+
+const ownerScope = {
+  ...config!,
+  kycOrigin: 'https://issuer.example.test',
+};
+
+async function ownerSession() {
+  const owner = setup();
+  await owner.call('entry', {}, { referralToken });
+  await owner.call('requestOtp', { phone: '9999900001' });
+  await owner.call('verifyOtp', { otp: '123456' });
+  await owner.call('lookup', { pan: 'AAAFA1234A' });
+  await owner.call('start', details);
+  return owner;
+}
+
+const ownerKyc = (value: unknown) => Response.json({ data: { dealerOwnerKyc: value } });
+
+it('authorizes the owner KYC route only with an explicitly pinned TLS origin and saved session', async () => {
+  const { service } = setup();
+  await expect(service.ownerKyc(config!, { action: 'STATUS' }, undefined)).rejects.toMatchObject({ status: 404 });
+  await expect(service.ownerKyc(ownerScope, { action: 'STATUS' }, undefined)).rejects.toMatchObject({ status: 409 });
+  const owner = await ownerSession();
+  const calls = owner.fetcher.mock.calls.length;
+  await expect(
+    owner.service.ownerKyc(ownerScope, { action: 'START', personId: '99' }, owner.cookie())
+  ).rejects.toMatchObject({ status: 400 });
+  expect(owner.fetcher).toHaveBeenCalledTimes(calls);
+});
+
+it('pins the current case and stage version and keeps DigiLocker private from app query telemetry', async () => {
+  const { service, cookie, fetcher } = await ownerSession();
+  fetcher.mockResolvedValueOnce(ownerKyc({ status: 'pending', actions: ['START', 'SYNC'], version: 3 }));
+  fetcher.mockResolvedValueOnce(
+    ownerKyc({
+      status: 'pending',
+      redirectUrl: 'https://issuer.example.test/own',
+      attempt: 'private',
+    })
+  );
+  await expect(service.ownerKyc(ownerScope, { action: 'START' }, cookie())).resolves.toEqual({
+    status: 'pending',
+    redirectUrl: 'https://issuer.example.test/own',
+  });
+  const latest = JSON.parse(fetcher.mock.calls[fetcher.mock.calls.length - 1][1].body);
+  expect(latest.variables).toEqual({ action: 'START', draftId: draft.id, referralToken, version: 3 });
+  fetcher.mockResolvedValueOnce(ownerKyc({ status: 'pending', actions: ['START'], version: 3 }));
+  fetcher.mockResolvedValueOnce(ownerKyc({ status: 'pending', redirectUrl: 'https://other.example.test/own' }));
+  await expect(service.ownerKyc(ownerScope, { action: 'START' }, cookie())).rejects.toMatchObject({ status: 503 });
+  for (const path of ['/api/dealer-onboarding/identity', '/api/dealer-onboarding/identity/selfie']) {
+    expect(isApplicantOnboardingRequest(path)).toBe(true);
+  }
+});
+
+it('bounds owner selfie transport and refuses even to parse it until the exact case permits it', async () => {
+  const { service, cookie, fetcher } = await ownerSession();
+  const file = Buffer.from([0xff, 0xd8, 0xff, 0, 0xff, 0xd9]);
+  const read = jest.fn(async () => file);
+  fetcher.mockResolvedValueOnce(ownerKyc({ status: 'pending', actions: ['START', 'SYNC'], version: 3 }));
+  await expect(service.uploadOwnerSelfie(ownerScope, read, cookie())).rejects.toMatchObject({ status: 409 });
+  expect(read).not.toHaveBeenCalled();
+  fetcher.mockResolvedValueOnce(ownerKyc({ status: 'verified', actions: ['SELFIE'], version: 3 }));
+  fetcher.mockResolvedValueOnce(ownerKyc({ status: 'verified', private: 'discarded' }));
+  await expect(service.uploadOwnerSelfie(ownerScope, read, cookie())).resolves.toEqual({ status: 'verified' });
+  const latest = JSON.parse(fetcher.mock.calls[fetcher.mock.calls.length - 1][1].body);
+  expect(latest.variables).toEqual({
+    action: 'SELFIE',
+    referralToken,
+    draftId: draft.id,
+    version: 3,
+    selfie: 'data:image/jpeg;base64,/9j/AP/Z',
+  });
+});

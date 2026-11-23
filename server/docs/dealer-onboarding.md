@@ -101,8 +101,29 @@ verified mobile against the owner’s invitation. The relay stores the receipt
 in the participant session and continues through the same own-person actions.
 The separate existing-receipt entry remains available for compatibility.
 
-The staged app remains private. Participant selfie transport and native viewer
-verification are required before enabling this workflow.
+The participant relay offers selfie capture when Destiny confirms that the
+receipt and current Aadhaar evidence are eligible. The front-camera popup
+supplies a JPEG for `POST /api/dealer-onboarding/participant/selfie`. The
+endpoint accepts one JPEG up to 96 KiB with no form fields and uses the
+participant cookie and attached receipt. The image bypasses the native query
+and is never stored in the relay. Destiny rechecks consent, the case version
+and the same Aadhaar evidence after matching.
+
+The staged app remains private. Native viewer and provider verification are
+required before enabling this workflow.
+
+## Dealer owner's own identity
+
+`POST /api/dealer-onboarding/identity` uses the authenticated dealer cookie and
+accepts only `{ action: 'STATUS' | 'START' | 'SYNC' }`. A separate
+`POST /api/dealer-onboarding/identity/selfie` accepts one JPEG of up to 96 KiB.
+These requests bypass RunJS. The relay rechecks the current case and allowed
+action through Fury before reading or sending camera bytes. Keep
+`TOOLJET_DEALER_OWNER_KYC_ORIGIN` unset until the exact managed HTTPS origin
+matches Fury's `FURY_DEALER_OWNER_KYC_ORIGIN` and the downstream provider is
+verified. The browser receives a redirect only for an eligible DigiLocker
+start. The relay neither stores uploads nor exposes provider receipt or
+document references.
 
 ## Owner agreement and submission
 
@@ -121,5 +142,4 @@ frozen Aadhaar signer roster. Submission requires completed provider signing
 and opens independent review. Existing fee checks remain on review claims
 and decisions.
 
-The bank and legal execution details and the owner's own KYC, selfie, and
-signature continue through the existing private intake routes.
+The owner's Aadhaar signature continues through the existing private intake route.
