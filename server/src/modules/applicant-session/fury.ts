@@ -8,6 +8,7 @@ export type ApplicantScope = {
   furyUrl: string;
   lspSecret: string;
 };
+export type ApplicantPurpose = 'borrower' | 'dealer' | 'dealer-participant';
 type ApplicantIdentity = { device: string; phone?: string; auth?: { token: string } };
 type Payload = Record<string, unknown>;
 

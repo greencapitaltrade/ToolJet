@@ -15,6 +15,19 @@ an identity grant. After OTP, the server uses the verified Fury session and the
 referral to bind an owned intake to the opaque session. Subsequent requests use
 the bound intake and the same verified Fury session.
 
+### Dealer owner dossier
+
+The dedicated `POST /api/dealer-onboarding/dossier` form route uses the
+same-origin verified dealer session. It accepts `STATUS` or one current form
+action with the displayed draft version. The relay supplies the draft and signed
+referral from the existing session and obtains the current form state from
+Destiny before writing. Results include the current version and available forms.
+Write values go directly from the native form to this route and remain outside
+ToolJet queries, tracing and applicant session storage.
+
+The `FURY_DEALER_OWNER_DOSSIER_ENABLED` and
+`DESTINY_DEALER_OWNER_DOSSIER_ENABLED` flags default off.
+
 | Operation | Input | Result |
 | --- | --- | --- |
 | `entry` | v3 `referralToken` and empty `fields` | `invite` or `phone` |
@@ -57,3 +70,74 @@ camera and eSign routes. Do not make that app public as a shortcut. Its browser
 gateway retains bearer state and broad private query envelopes. The public
 continuation requires explicit actions for the confirmed applicant role and
 current step and must be tested before activation.
+
+### Camera opener
+
+`TOOLJET_DEALER_CAMERA_VIEWER_URL` defaults to unset. To enable the camera
+handshake, set it to the complete HTTPS URL of the dealer viewer page on the
+canonical `TOOLJET_HOST` origin. Include the server mount path if configured.
+For example, use `https://tooljet.example.test/applications/dealership/dealer-admission`.
+Use the page URL without a trailing slash, query string or fragment. Invitation
+links can still carry query parameters and fragments.
+
+An exact GET for this viewer receives `same-origin-allow-popups` so the Fury
+camera can communicate with its opener. An absent or invalid setting leaves
+Helmet's default opener policy in effect.
+
+## Separate participant session
+
+`POST /api/dealer-onboarding/participant` uses its own opaque HttpOnly cookie
+and Redis keys. Keep `TOOLJET_DEALER_PARTICIPANT` unset until the participant
+workflow is ready. The managed configuration uses the same four connection
+settings as dealer onboarding plus an exact HTTPS `kycOrigin` and
+`signingOrigin`. Redirects from a different origin are refused.
+
+The route accepts `entry`, `requestOtp` and `verifyOtp` using the same shapes as
+dealer admission. After independent OTP, `attach` accepts `fields.consentId`.
+Fury and Destiny must match the receipt to the authenticated participant and
+the signed dealer parent before returning status. The server stores the receipt
+for the session. `status`, `startKyc`, `syncKyc`, `sign` and `withdraw` accept
+empty `fields`. Public responses contain only the projected status and allowed
+actions, plus an approved provider redirect when needed.
+
+An owner can use `inviteParticipant` with the intended `mobile`, copy the
+invitation, list `participantRequests`, and `acceptParticipant` with an exact
+pending `consentId` and the listed `version`. The ToolJet server uses its
+verified draft and signed referral for each action. It does not dispatch any
+notification.
+
+The participant link carries an opaque invitation reference alongside the
+signed referral. `entry` accepts it as `fields.invitationId`. The relay does
+not look up the reference before independent OTP. `status` then recovers the
+participant’s own receipt or requests their consent details. `claim` accepts
+only `consent`, `name`, `role`, `din` and `kyc_contact`. Destiny checks the
+verified mobile against the owner’s invitation. The relay stores the receipt
+in the participant session and continues through the same own-person actions.
+The separate existing-receipt entry remains available for compatibility.
+
+The staged app remains private. Participant selfie transport and native viewer
+verification are required before enabling this workflow.
+
+## Owner agreement and submission
+
+`agreementStatus` returns the current stage and available actions.
+`prepareAgreement`, `verifyBank`, `freezeAgreement`, `refreshSignatures`,
+`signOwnerAgreement`, and `submitForReview` accept no browser fields. The relay supplies the case,
+signed referral and current version from its authenticated owner session.
+Destiny checks the original owner and pinned dealer policy again for each
+operation. `signOwnerAgreement` requires verified owner KYC and selfie evidence
+for the owner's entry in the frozen roster. It returns only that entry's link
+and requires an exact HTTPS `signingOrigin` in a matching
+`TOOLJET_DEALER_PARTICIPANT` configuration. The other completion operations
+omit signing links. Completion responses omit account details and signed files.
+
+Preparation requires registered evidence and opens any configured intermediate
+review. Bank verification uses the saved execution data, the pinned product,
+and the configured AU remitter. Statement attachments and the verified bank
+snapshot are separate prerequisites. Agreement preparation preserves the snapshot and
+frozen Aadhaar signer roster. Submission requires completed provider signing
+and opens independent review. Existing fee checks remain on review claims
+and decisions.
+
+The dedicated dossier and identity routes collect execution details and the
+owner's own identity evidence.

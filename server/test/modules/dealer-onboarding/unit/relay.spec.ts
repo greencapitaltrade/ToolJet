@@ -1,5 +1,6 @@
 /** @group platform */
 import { DealerOnboarding, parseDealerOnboardingConfig } from '../../../../src/modules/dealer-onboarding/relay';
+import { parseDealerParticipantConfig } from '../../../../src/modules/dealer-onboarding/participant';
 import { isApplicantOnboardingRequest, sanitizeOAuthRequest } from '../../../../src/otel/sanitize';
 
 const config = parseDealerOnboardingConfig(
@@ -26,7 +27,10 @@ const details = {
   email: 'applicant@example.test',
 };
 
-function setup() {
+const signingUrl = 'https://sign.example.test/synthetic-own-link';
+const signing = { kycOrigin: 'https://kyc.example.test', signingOrigin: 'https://sign.example.test' };
+
+function setup(settings = config) {
   const keys = new Map<string, string>();
   const redis = {
     async call(command: string, ...args: string[]) {
@@ -54,9 +58,21 @@ function setup() {
   let created = false;
   let entityFields: string[] = [];
   let evidence: unknown[] = [];
+  let completionStage = 'bank_verification_required';
+  let completionUrl = signingUrl;
   const fetcher = jest.fn(async (_url, request) => {
     if (request.body instanceof FormData) return Response.json({ attached: true });
     const { query, variables } = JSON.parse(request.body);
+    if (new URL(_url).pathname === '/v2/dealer/dossier') {
+      const saved = variables.action === 'SAVE_OWN_DIN';
+      return Response.json({
+        version: saved ? 6 : 5,
+        history: 'bank_and_gst',
+        execution: 'registered_entity',
+        own_din: saved ? null : 'DIN',
+        bank_account_number: 'private',
+      });
+    }
     if (query.includes('dealerReferralEligibility'))
       return Response.json({ data: { dealerReferralEligibility: { organizationId: '39', eligible: true } } });
     if (query.includes('sessionCreateV2'))
@@ -75,6 +91,25 @@ function setup() {
         },
       });
     }
+    if (query.includes('dealerOwnerParticipant'))
+      return Response.json({ data: { dealerOwnerParticipant: { status: 'invited', id: draft.id } } });
+    if (query.includes('dealerOwnerCompletion'))
+      return Response.json({
+        data: {
+          dealerOwnerCompletion: {
+            stage: completionStage,
+            version: 5,
+            actions:
+              completionStage === 'bank_verification_required'
+                ? ['VERIFY_BANK']
+                : completionStage === 'signing_pending'
+                  ? ['REFRESH', 'SIGN']
+                  : [],
+            signingUrl: completionUrl,
+            signer: 'private',
+          },
+        },
+      });
     if (query.includes('dealerPanLookup'))
       return Response.json({
         data: {
@@ -99,12 +134,19 @@ function setup() {
     session = id;
   };
   const call = (operation: string, fields = {}, extra = {}) =>
-    service.run(config, { operation, fields, ...extra }, session, capture);
+    service.run(settings, { operation, fields, ...extra }, session, capture);
   return {
     service,
     call,
     fetcher,
     cookie: () => session,
+    persisted: () => [...keys.values()].join(' '),
+    setCompletionStage: (stage: string) => {
+      completionStage = stage;
+    },
+    setCompletionUrl: (url: string) => {
+      completionUrl = url;
+    },
     setEvidence: (actions: unknown[]) => {
       evidence = actions;
     },
@@ -113,6 +155,107 @@ function setup() {
     },
   };
 }
+
+it('binds the isolated dossier form to the current verified owner session and never stores field values', async () => {
+  const fixture = setup();
+  const dossier = (body: unknown) => fixture.service.dossier(config!, body, fixture.cookie());
+  await fixture.call('entry', {}, { referralToken });
+  await expect(dossier({ action: 'STATUS' })).rejects.toMatchObject({ status: 409 });
+  await fixture.call('requestOtp', { phone: '9999900001' });
+  await fixture.call('verifyOtp', { otp: '123456' });
+  await fixture.call('lookup', { pan: 'AAAFA1234A' });
+  await fixture.call('start', details);
+  await expect(fixture.call('SAVE_OWN_DIN', { din: '12345678' })).rejects.toMatchObject({ status: 400 });
+  await expect(dossier({ action: 'STATUS', draftId: draft.id })).rejects.toMatchObject({ status: 400 });
+  await expect(dossier({ action: 'STATUS' })).resolves.toEqual({
+    version: 5,
+    history: 'bank_and_gst',
+    execution: 'registered_entity',
+    own_din: 'DIN',
+  });
+  await expect(dossier({ action: 'SAVE_OWN_DIN', version: 4, fields: { din: '12345678' } })).rejects.toMatchObject({
+    status: 409,
+  });
+  expect(JSON.parse(fixture.fetcher.mock.calls.slice(-1)[0][1].body).variables.action).toBe('STATUS');
+  await expect(dossier({ action: 'SAVE_OWN_DIN', version: 5, fields: { din: '12345678' } })).resolves.toMatchObject({
+    own_din: null,
+    version: 6,
+  });
+  const [url, options] = fixture.fetcher.mock.calls.slice(-1)[0];
+  expect(String(url)).toBe('https://gateway.example.test/v2/dealer/dossier');
+  expect(options.headers).toMatchObject({ cookie: expect.stringMatching(/^authorization=/) });
+  expect(JSON.parse(options.body)).toEqual({
+    variables: { action: 'SAVE_OWN_DIN', referralToken, draftId: draft.id, version: 5, fields: { din: '12345678' } },
+  });
+  expect(fixture.persisted()).not.toContain('12345678');
+  expect(
+    sanitizeOAuthRequest({
+      url: '/api/dealer-onboarding/dossier',
+      body: { fields: { bank_account_number: '12345678' } },
+    }).body
+  ).toBe('[REDACTED]');
+});
+
+it('uses only current server-authorized dealer completion actions and versions', async () => {
+  const fixture = setup();
+  await fixture.call('entry', {}, { referralToken });
+  await expect(fixture.call('agreementStatus')).rejects.toMatchObject({ status: 409 });
+  await fixture.call('requestOtp', { phone: '9999900001' });
+  await fixture.call('verifyOtp', { otp: '123456' });
+  await fixture.call('lookup', { pan: 'AAAFA1234A' });
+  await fixture.call('start', details);
+  await expect(fixture.call('agreementStatus')).resolves.toEqual({
+    state: 'dealerCompletion',
+    stage: 'bank_verification_required',
+    actions: ['verifyBank'],
+  });
+  await expect(fixture.call('freezeAgreement', { version: 5 })).rejects.toMatchObject({ status: 400 });
+  await expect(fixture.call('freezeAgreement')).rejects.toMatchObject({ status: 409 });
+  await fixture.call('verifyBank');
+  const updates = fixture.fetcher.mock.calls
+    .map(([, request]) => JSON.parse(request.body))
+    .filter((call) => call.query.includes('dealerOwnerCompletion') && call.variables.action !== 'STATUS');
+  expect(updates.map((call) => call.variables)).toEqual([
+    { draftId: draft.id, referralToken, action: 'VERIFY_BANK', version: 5 },
+  ]);
+  fixture.setCompletionStage('submitted');
+  await expect(fixture.call('verifyBank')).rejects.toMatchObject({ status: 409 });
+});
+
+it('signs only the owner case at the current version with the configured exact HTTPS origin', async () => {
+  const scope = (organizationId: string) =>
+    parseDealerParticipantConfig(JSON.stringify({ ...config, ...signing, organizationId }));
+  const pending = async (fixture: ReturnType<typeof setup>) => {
+    await fixture.call('entry', {}, { referralToken });
+    await expect(fixture.call('signOwnerAgreement')).rejects.toMatchObject({ status: 409 });
+    await fixture.call('requestOtp', { phone: '9999900001' });
+    await fixture.call('verifyOtp', { otp: '123456' });
+    await fixture.call('lookup', { pan: 'AAAFA1234A' });
+    await fixture.call('start', details);
+    fixture.setCompletionStage('signing_pending');
+  };
+  const status = { state: 'dealerCompletion', stage: 'signing_pending', actions: ['refreshSignatures'] };
+  for (const missing of [undefined, scope('40')]) {
+    const fixture = setup(parseDealerOnboardingConfig(JSON.stringify(config), missing));
+    await pending(fixture);
+    await expect(fixture.call('agreementStatus')).resolves.toEqual(status);
+    await expect(fixture.call('signOwnerAgreement')).rejects.toMatchObject({ status: 409 });
+  }
+  const fixture = setup(parseDealerOnboardingConfig(JSON.stringify(config), scope('39')));
+  await pending(fixture);
+  const available = { ...status, actions: [...status.actions, 'signOwnerAgreement'] };
+  await expect(fixture.call('agreementStatus')).resolves.toEqual(available);
+  await expect(fixture.call('signOwnerAgreement', { version: 5, signerId: '4' })).rejects.toMatchObject({
+    status: 400,
+  });
+  await expect(fixture.call('signOwnerAgreement')).resolves.toEqual({ ...available, signingUrl });
+  expect(fixture.persisted()).not.toContain(signingUrl);
+  const calls = fixture.fetcher.mock.calls;
+  const [, request] = calls[calls.length - 1];
+  expect(JSON.parse(request.body).variables).toEqual({ draftId: draft.id, referralToken, action: 'SIGN', version: 5 });
+  fixture.setCompletionUrl('https://sign.example.test.bad.example/own');
+  await expect(fixture.call('signOwnerAgreement')).rejects.toMatchObject({ status: 503 });
+});
 
 it('verifies the invite and OTP, saves PAN server-side, creates under the invite and resumes only its draft', async () => {
   const { call, cookie, service, fetcher } = setup();
@@ -241,4 +384,31 @@ it('attaches only projected evidence under the verified cookie and server-select
     draft_id: draft.id,
   });
   expect(await options.body.get('file').text()).toBe(pdf.toString());
+});
+
+it('shares a participant link only from the verified owner draft without browser parent or actor', async () => {
+  const { call, fetcher } = setup();
+  await call('entry', {}, { referralToken });
+  await expect(call('inviteParticipant', { mobile: '9999900002' })).rejects.toMatchObject({ status: 409 });
+  await call('requestOtp', { phone: '9999900001' });
+  await call('verifyOtp', { otp: '123456' });
+  await call('lookup', { pan: 'AAAFA1234A' });
+  await call('start', details);
+  await expect(call('inviteParticipant', { mobile: '9999900002', draftId: 'foreign' })).rejects.toMatchObject({
+    status: 400,
+  });
+  await expect(call('inviteParticipant', { mobile: '9999900002' })).resolves.toEqual({
+    state: 'participantInvite',
+    invitationId: draft.id,
+    referralToken,
+  });
+  const sent = fetcher.mock.calls
+    .map(([, { body }]) => JSON.parse(body))
+    .find(({ query }) => query.includes('dealerOwnerParticipant'));
+  expect(sent.variables).toEqual({
+    action: 'INVITE',
+    draftId: draft.id,
+    referralToken,
+    fields: { mobile: '9999900002' },
+  });
 });
