@@ -1,6 +1,8 @@
 import { TooljetDatabaseError } from '@modules/tooljet-db/types';
 import { ExceptionFilter, Catch, ArgumentsHost, HttpException, HttpStatus } from '@nestjs/common';
+import { isConfiguredOidcRequest, sanitizeOAuthUrl } from '@otel/sanitize';
 import { SentryExceptionCaptured } from '@sentry/nestjs';
+import type { Request, Response } from 'express';
 import { Logger } from 'nestjs-pino';
 import { QueryFailedError } from 'typeorm';
 
@@ -22,21 +24,18 @@ export class AllExceptionsFilter implements ExceptionFilter {
 
   @SentryExceptionCaptured()
   catch(exception: any, host: ArgumentsHost) {
+    const ctx = host.switchToHttp();
+    const response = ctx.getResponse<Response>();
+    const request = ctx.getRequest<Request>();
+    const url = request.originalUrl || request.url;
+    const oidc = isConfiguredOidcRequest(url);
+    const logContext = {
+      method: request.method,
+      url: sanitizeOAuthUrl(url),
+      transactionId: response.locals?.tj_transactionId,
+    };
+
     try {
-      const ctx = host.switchToHttp();
-      const response = ctx.getResponse();
-      const request = ctx.getRequest();
-
-      this.logger.error(
-        {
-          method: request.method,
-          url: request.url,
-          headers: request.headers,
-          exception,
-        },
-        exception.stack
-      );
-
       const INVITE_EXPIRY_MESSAGES = ['WORKSPACE_INVITE_LINK_EXPIRED', 'INVITATION_LINK_EXPIRED'];
       let errorResponse: ErrorResponse;
       const message = exception?.response?.message || exception.message;
@@ -61,6 +60,12 @@ export class AllExceptionsFilter implements ExceptionFilter {
         errorResponse = { message, status: HttpStatus.INTERNAL_SERVER_ERROR };
       }
 
+      this.logger.error(
+        { ...logContext, statusCode: errorResponse.status, ...(oidc ? {} : { exception }) },
+        oidc ? 'Configured OIDC request failed' : exception.stack,
+        AllExceptionsFilter.name
+      );
+
       response.status(errorResponse.status).json({
         statusCode: errorResponse.status,
         timestamp: new Date().toISOString(),
@@ -72,7 +77,11 @@ export class AllExceptionsFilter implements ExceptionFilter {
         ...(validationIssues && { issues: validationIssues, warnings: validationWarnings }),
       });
     } catch (error) {
-      this.logger.error('Error while processing uncaught exception', (error as any).stack);
+      if (oidc) {
+        this.logger.error(logContext, 'Error while processing a configured OIDC exception', AllExceptionsFilter.name);
+      } else {
+        this.logger.error('Error while processing uncaught exception', (error as Error).stack);
+      }
     }
   }
 

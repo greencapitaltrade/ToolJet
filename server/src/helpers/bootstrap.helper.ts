@@ -13,7 +13,7 @@ import * as Sentry from '@sentry/nestjs';
 import { DataSource } from 'typeorm';
 import { LoggerService } from '@nestjs/common';
 import { Request, Response, NextFunction } from 'express';
-import { isApplicantOnboardingRequest } from '@otel/sanitize';
+import { isApplicantOnboardingRequest, isConfiguredOidcRequest } from '@otel/sanitize';
 
 /**
  * Creates a logger instance with a specific context
@@ -247,7 +247,8 @@ export function initSentry(logger: any, configService: ConfigService) {
       environment: configService.get<string>('NODE_ENV') || 'development',
       debug: !!configService.get<string>('SENTRY_DEBUG'),
       sendDefaultPii: true,
-      beforeSend: (event) => (isApplicantOnboardingRequest(event.request?.url) ? null : event),
+      beforeSend: (event) =>
+        isApplicantOnboardingRequest(event.request?.url) || isConfiguredOidcRequest(event.request?.url) ? null : event,
       // OTel SDK (otel/tracing.ts) owns tracing; else Sentry double-registers spans, splits every trace in two.
       skipOpenTelemetrySetup: true,
     });
