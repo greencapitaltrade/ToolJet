@@ -82,18 +82,26 @@ type PartnerSession = {
   referral_targets?: { dealer?: CaseTarget[]; borrower?: CaseTarget[] };
 };
 
-type PartnerRow = CaseTarget & {
-  type: string;
-  status: string;
-  parent_id: string | null;
+type DestinyId = string | number;
+type PartnerKey = { id: DestinyId; type: string; status: string };
+type PartnerRow = PartnerKey & {
+  name: string;
+  parent_id: DestinyId | null;
   onboarding_status?: string;
   draft_id?: string;
 };
+type PartnerPage = { partners: PartnerRow[]; next_after?: DestinyId | null };
 
 class UpstreamError extends Error {
   constructor(readonly status: number) {
     super();
   }
+}
+
+function destinyId(value: unknown): string {
+  const id = typeof value === 'number' && Number.isSafeInteger(value) ? String(value) : value;
+  if (!positiveId(id)) throw new UpstreamError(503);
+  return id;
 }
 
 type ViewerRequest = Request & { user: Parameters<SessionUtilService['getOidcActor']>[0] };
@@ -206,49 +214,49 @@ export class PartnerOpsController {
           break;
         }
         case 'partners': {
-          const result = await forward<{ partners: PartnerRow[]; next_after?: string }>(`/v1/partners${page}`);
+          const result = await forward<PartnerPage>(`/v1/partners${page}`);
           data = {
             rows: result.partners.map(({ id, name, type, status, parent_id, onboarding_status, draft_id }) => ({
-              id,
+              id: destinyId(id),
               name,
               type,
               status,
-              parentId: parent_id,
+              parentId: parent_id === null ? null : destinyId(parent_id),
               onboardingStatus: onboarding_status,
               canPayFee: type === 'dealer' && status === 'pending' && isDraftId(draft_id),
             })),
-            ...(result.next_after && { nextAfter: result.next_after }),
+            ...(result.next_after != null && { nextAfter: destinyId(result.next_after) }),
           };
           break;
         }
         case 'borrowerApplications': {
           const result = await forward<{
-            applications: { id: string | number; status: string; partner_id: string }[];
-            next_after?: string | number;
+            applications: { id: DestinyId; status: string; partner_id: DestinyId }[];
+            next_after?: DestinyId | null;
           }>(`/v1/partners/${partnerId}/applications${page}`);
           data = {
             rows: result.applications.map(({ id, status, partner_id }) => ({
-              id: String(id),
+              id: destinyId(id),
               status,
-              partnerId: partner_id,
+              partnerId: destinyId(partner_id),
             })),
-            ...(result.next_after && { nextAfter: String(result.next_after) }),
+            ...(result.next_after != null && { nextAfter: destinyId(result.next_after) }),
           };
           break;
         }
         case 'borrowerDpd': {
           const result = await forward<{
             loans: { id: string; application_id: string; days_past_due: number | null; as_of: string }[];
-            next_after?: string | number;
+            next_after?: DestinyId | null;
           }>(`/v1/partners/${partnerId}/dpd${page}`);
           data = {
             rows: result.loans.map(({ id, application_id, days_past_due, as_of }) => ({
               id,
-              applicationId: application_id,
+              applicationId: destinyId(application_id),
               daysPastDue: days_past_due,
               asOf: as_of,
             })),
-            ...(result.next_after && { nextAfter: String(result.next_after) }),
+            ...(result.next_after != null && { nextAfter: destinyId(result.next_after) }),
           };
           break;
         }
@@ -275,12 +283,22 @@ export class PartnerOpsController {
         }
         case 'feeStatus':
         case 'feeCheckout': {
-          const dealer = await forward<PartnerRow>(`/v1/partners/${dealerId}`);
+          const dealer = await forward<PartnerKey>(`/v1/partners/${dealerId}`);
+          if (destinyId(dealer.id) !== dealerId || dealer.type !== 'dealer' || dealer.status !== 'pending') {
+            return fail(404);
+          }
+
+          // The scoped detail route omits draft_id. Resolve it through the directory's ID-ordered page.
+          const directoryQuery = new URLSearchParams({ limit: '1' });
+          if (dealerId !== '1') directoryQuery.set('after', (BigInt(dealerId) - BigInt(1)).toString());
+          const { partners } = await forward<PartnerPage>(`/v1/partners?${directoryQuery}`);
+          const candidate = partners[0];
           if (
-            dealer.id !== dealerId ||
-            dealer.type !== 'dealer' ||
-            dealer.status !== 'pending' ||
-            !isDraftId(dealer.draft_id)
+            !candidate ||
+            destinyId(candidate.id) !== dealerId ||
+            candidate.type !== 'dealer' ||
+            candidate.status !== 'pending' ||
+            !isDraftId(candidate.draft_id)
           ) {
             return fail(404);
           }
@@ -291,7 +309,7 @@ export class PartnerOpsController {
             currency: string | null;
             invoice_number?: string;
             payment_url?: string;
-          }>(`/v1/channel-partners/intakes/${dealer.draft_id}/fee/${action}`, {});
+          }>(`/v1/channel-partners/intakes/${candidate.draft_id}/fee/${action}`, {});
           const amount = fee.total_paise;
           if (
             amount != null &&

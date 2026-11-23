@@ -116,6 +116,7 @@ describe('partner operator workspace relay', () => {
   it.each([
     { operation: 'feeCheckout', dealerId: '11', amountPaise: '1' },
     { operation: 'partners', partnerId: '1/path' },
+    { operation: 'partners', partnerId: 11 },
     { operation: 'borrowerApplications', partnerId: '9223372036854775808' },
     { operation: 'dealerLink', organizationId: '7' },
     { operation: 'dealerLink' },
@@ -215,20 +216,21 @@ describe('partner operator workspace relay', () => {
       globalThis.Response.json({
         partners: [
           {
-            id: '17',
+            id: 17,
             name: 'Dealer fixture',
             type: 'dealer',
             status: 'pending',
-            parent_id: '11',
+            parent_id: 11,
             onboarding_status: 'in_progress',
             draft_id: draftId,
             partner_code: 'private',
           },
         ],
-        next_after: '17',
+        next_after: 17,
       })
     );
-    expect(await relay({ operation: 'partners', partnerId: '11', after: '16' })).toEqual({
+    const firstPage = await relay({ operation: 'partners', partnerId: '11', after: '16' });
+    expect(firstPage).toEqual({
       status: 200,
       body: {
         data: {
@@ -252,13 +254,85 @@ describe('partner operator workspace relay', () => {
       upstream + '/v1/partners?parent_id=11&after=16',
       expect.objectContaining({ method: 'GET' })
     );
+
+    jest
+      .mocked(fetch)
+      .mockResolvedValueOnce(globalThis.Response.json({ sub: '42', organization_id: '7' }))
+      .mockResolvedValueOnce(globalThis.Response.json({ partners: [], next_after: null }));
+    const { nextAfter, rows } = firstPage.body.data;
+    expect(await relay({ operation: 'partners', partnerId: rows[0].parentId, after: nextAfter })).toEqual({
+      status: 200,
+      body: { data: { rows: [] } },
+    });
+    expect(fetch).toHaveBeenNthCalledWith(
+      4,
+      upstream + '/v1/partners?parent_id=11&after=17',
+      expect.objectContaining({ method: 'GET' })
+    );
+
+    jest
+      .mocked(fetch)
+      .mockResolvedValueOnce(globalThis.Response.json({ sub: '42', organization_id: '7' }))
+      .mockResolvedValueOnce(globalThis.Response.json({ applications: [], next_after: null }));
+    expect(await relay({ operation: 'borrowerApplications', partnerId: rows[0].id })).toEqual({
+      status: 200,
+      body: { data: { rows: [] } },
+    });
+    expect(fetch).toHaveBeenNthCalledWith(
+      6,
+      upstream + '/v1/partners/17/applications',
+      expect.objectContaining({ method: 'GET' })
+    );
+  });
+
+  it('preserves exact decimal BIGINT strings in partner rows and cursors', async () => {
+    const id = '9223372036854775807';
+    const parent = '9007199254740993';
+    jest
+      .mocked(fetch)
+      .mockResolvedValueOnce(globalThis.Response.json({ sub: '42', organization_id: '7' }))
+      .mockResolvedValueOnce(
+        globalThis.Response.json({
+          partners: [{ id, name: 'Dealer fixture', type: 'dealer', status: 'pending', parent_id: parent }],
+          next_after: id,
+        })
+      );
+    expect(await relay({ operation: 'partners', partnerId: parent })).toMatchObject({
+      status: 200,
+      body: { data: { rows: [{ id, parentId: parent }], nextAfter: id } },
+    });
+  });
+
+  it.each([
+    [{ operation: 'partners' }, { partners: [{ id: 9007199254740992, parent_id: null }] }],
+    [{ operation: 'partners' }, { partners: [{ id: 11, parent_id: 9007199254740992 }] }],
+    [{ operation: 'partners' }, { partners: [], next_after: 9007199254740992 }],
+    [
+      { operation: 'borrowerApplications', partnerId: '11' },
+      { applications: [{ id: 24, status: 'pending', partner_id: 9007199254740992 }] },
+    ],
+    [
+      { operation: 'borrowerDpd', partnerId: '11' },
+      { loans: [], next_after: 9007199254740992 },
+    ],
+    [
+      { operation: 'feeCheckout', dealerId: '9007199254740992' },
+      { id: 9007199254740992, type: 'dealer', status: 'pending' },
+    ],
+  ])('fails closed when Destiny returns an unsafe numeric identifier for %p', async (input, result) => {
+    jest
+      .mocked(fetch)
+      .mockResolvedValueOnce(globalThis.Response.json({ sub: '42', organization_id: '7' }))
+      .mockResolvedValueOnce(globalThis.Response.json(result));
+    expect((await relay(input)).status).toBe(503);
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   it('lists scoped borrower applications without forwarding unneeded fields', async () => {
     jest.mocked(fetch).mockResolvedValueOnce(globalThis.Response.json({ sub: '42', organization_id: '7' }));
     jest.mocked(fetch).mockResolvedValueOnce(
       globalThis.Response.json({
-        applications: [{ id: 24, status: 'pending', organization_id: '7', partner_id: '17' }],
+        applications: [{ id: 24, status: 'pending', organization_id: 7, partner_id: 17 }],
         next_after: 24,
       })
     );
@@ -302,15 +376,16 @@ describe('partner operator workspace relay', () => {
   });
 
   it.each([
-    ['feeStatus', 'refresh'],
-    ['feeCheckout', 'checkout'],
-  ])('resolves the authorized dealer draft for %s before calling the existing fee route', async (operation, action) => {
-    jest.mocked(fetch).mockResolvedValueOnce(globalThis.Response.json({ sub: '42', organization_id: '7' }));
+    ['feeStatus', 'refresh', 11, 'limit=1&after=10'],
+    ['feeCheckout', 'checkout', 1, 'limit=1'],
+    ['feeCheckout', 'checkout', '9223372036854775807', 'limit=1&after=9223372036854775806'],
+  ])('resolves the authorized dealer draft for %s via %s with ID %s', async (operation, action, id, query) => {
+    const dealer = { id, type: 'dealer', status: 'pending' };
     jest
       .mocked(fetch)
-      .mockResolvedValueOnce(
-        globalThis.Response.json({ id: '11', type: 'dealer', status: 'pending', draft_id: draftId })
-      );
+      .mockResolvedValueOnce(globalThis.Response.json({ sub: '42', organization_id: '7' }))
+      .mockResolvedValueOnce(globalThis.Response.json(dealer))
+      .mockResolvedValueOnce(globalThis.Response.json({ partners: [{ ...dealer, draft_id: draftId }] }));
     jest.mocked(fetch).mockResolvedValueOnce(
       globalThis.Response.json({
         status: 'unpaid',
@@ -320,7 +395,7 @@ describe('partner operator workspace relay', () => {
         payment_url: 'https://pay.example.test/',
       })
     );
-    expect(await relay({ operation, dealerId: '11' })).toEqual({
+    expect(await relay({ operation, dealerId: String(id) })).toEqual({
       status: 200,
       body: {
         data: {
@@ -332,23 +407,56 @@ describe('partner operator workspace relay', () => {
         },
       },
     });
-    expect(fetch).toHaveBeenNthCalledWith(2, upstream + '/v1/partners/11', expect.objectContaining({ method: 'GET' }));
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      upstream + `/v1/partners/${id}`,
+      expect.objectContaining({ method: 'GET' })
+    );
     expect(fetch).toHaveBeenNthCalledWith(
       3,
+      upstream + `/v1/partners?${query}`,
+      expect.objectContaining({ method: 'GET' })
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      4,
       upstream + `/v1/channel-partners/intakes/${draftId}/fee/${action}`,
       expect.objectContaining({ method: 'POST', body: '{}' })
     );
   });
 
   it.each([
-    { id: '12', type: 'dealer', status: 'pending', draft_id: draftId },
-    { id: '11', type: 'channel_partner', status: 'pending', draft_id: draftId },
-    { id: '11', type: 'dealer', status: 'active', draft_id: draftId },
-    { id: '11', type: 'dealer', status: 'pending', draft_id: '../different' },
-  ])('does not run checkout outside the resolved pending dealer draft', async (partner) => {
+    { id: 12, type: 'dealer', status: 'pending' },
+    { id: 11, type: 'channel_partner', status: 'pending' },
+    { id: 11, type: 'dealer', status: 'active' },
+  ])('does not look up a draft when the selected partner is not the authorized pending dealer', async (partner) => {
     jest.mocked(fetch).mockResolvedValueOnce(globalThis.Response.json({ sub: '42', organization_id: '7' }));
     jest.mocked(fetch).mockResolvedValueOnce(globalThis.Response.json(partner));
     expect((await relay({ operation: 'feeCheckout', dealerId: '11' })).status).toBe(404);
+    expect(fetch).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    [[]],
+    [[{ id: 12, type: 'dealer', status: 'pending', draft_id: draftId }]],
+    [[{ id: 11, type: 'channel_partner', status: 'pending', draft_id: draftId }]],
+    [[{ id: 11, type: 'dealer', status: 'active', draft_id: draftId }]],
+    [[{ id: 11, type: 'dealer', status: 'pending', draft_id: '../different' }]],
+  ])('does not run checkout without the exact matching pending dealer draft in the directory', async (partners) => {
+    jest
+      .mocked(fetch)
+      .mockResolvedValueOnce(globalThis.Response.json({ sub: '42', organization_id: '7' }))
+      .mockResolvedValueOnce(globalThis.Response.json({ id: 11, type: 'dealer', status: 'pending' }))
+      .mockResolvedValueOnce(globalThis.Response.json({ partners }));
+    expect((await relay({ operation: 'feeCheckout', dealerId: '11' })).status).toBe(404);
+    expect(fetch).toHaveBeenCalledTimes(3);
+  });
+
+  it('preserves Destiny scope denial before looking up a draft', async () => {
+    jest
+      .mocked(fetch)
+      .mockResolvedValueOnce(globalThis.Response.json({ sub: '42', organization_id: '7' }))
+      .mockResolvedValueOnce(globalThis.Response.json({}, { status: 403 }));
+    expect((await relay({ operation: 'feeCheckout', dealerId: '11' })).status).toBe(403);
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
