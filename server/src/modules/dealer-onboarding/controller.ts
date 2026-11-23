@@ -27,7 +27,11 @@ export class DealerOnboardingController {
   ) {
     const connection: ApplicantRedis = { call: (command, ...args) => redis.getClient().call(command, ...args) };
     this.relay = new DealerOnboarding(connection);
-    this.participant = new DealerParticipant(connection);
+    this.participant = new DealerParticipant(
+      connection,
+      fetch,
+      this.config.get<string>('TOOLJET_PARTNER_OPS_UPSTREAM_ORIGIN')
+    );
   }
 
   @Post()

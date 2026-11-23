@@ -25,7 +25,9 @@ the shared short-lived applicant store.
   invitations carry the dealer's v3 referral and an opaque invitation ID.
 - Owner handoff operations use the draft and signed referral already stored in
   the verified owner session. The participant route stores only the opaque
-  invitation reference before OTP, then obtains the current receipt downstream.
+  invitation reference before OTP. The participant relay uses the verified
+  OTP session to claim only that invitation on the configured private Destiny
+  origin. Existing receipt and own-person actions still use Fury.
   Keep copied links and the participant role out of query logs and storage.
 - The owner dossier form uses the dedicated same-origin route. Keep form values
   in that request only. The bound session and Destiny determine the draft,

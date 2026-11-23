@@ -104,9 +104,12 @@ The participant link carries an opaque invitation reference alongside the
 signed referral. `entry` accepts it as `fields.invitationId`. The relay does
 not look up the reference before independent OTP. `status` then recovers the
 participant’s own receipt or requests their consent details. `claim` accepts
-only `consent`, `name`, `role`, `din` and `kyc_contact`. Destiny checks the
-verified mobile against the owner’s invitation. The relay stores the receipt
-in the participant session and continues through the same own-person actions.
+only `consent`, `name`, `role`, `din` and `kyc_contact`. This operation uses
+the existing `TOOLJET_PARTNER_OPS_UPSTREAM_ORIGIN` for a fixed private Destiny
+request, forwarding only the server-verified actor, tenant and phone from
+the existing OTP session. Destiny matches the verified phone to the saved
+invitation. The relay stores the receipt in the participant session and
+continues through the same authenticated Fury own-person actions.
 The separate existing-receipt entry remains available for compatibility.
 
 The participant relay offers selfie capture when Destiny confirms that the

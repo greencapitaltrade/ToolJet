@@ -1,7 +1,10 @@
+import { privateServiceOrigin } from '../../helpers/private-service-origin';
 import {
   ApplicantFury,
+  ApplicantRequestError,
   ApplicantScope,
   applicantScope,
+  applicantOtpClaims,
   exactHttpsOrigin,
   isApplicantReferral,
   normalizeApplicantPhone,
@@ -40,12 +43,6 @@ const attachment = {
     dealerParticipantAttach(referralToken: $referralToken, consentId: $consentId) {
       status kycStatus selfieAvailable selfieVerified agreementPrepared
     }
-  }`,
-};
-const claimInvitation = {
-  field: 'dealerParticipantClaim',
-  query: `mutation DealerParticipantClaim($referralToken: String!, $invitationId: ID!, $fields: JSON) {
-    dealerParticipantClaim(referralToken: $referralToken, invitationId: $invitationId, fields: $fields) { status id }
   }`,
 };
 const ownAction = {
@@ -190,9 +187,16 @@ export class DealerParticipant {
   private readonly fury: ApplicantFury;
   private readonly sessions: ApplicantSessions<State>;
 
-  constructor(redis: ApplicantRedis, fetcher: typeof fetch = fetch) {
+  private readonly destinyOrigin: string | null;
+
+  constructor(
+    redis: ApplicantRedis,
+    private readonly fetcher: typeof fetch = fetch,
+    destinyOrigin?: string
+  ) {
     this.fury = new ApplicantFury(fetcher);
     this.sessions = new ApplicantSessions(redis, 'dealer-participant');
+    this.destinyOrigin = privateServiceOrigin(destinyOrigin);
   }
 
   private async eligible(scope: Scope, referral: string) {
@@ -217,17 +221,35 @@ export class DealerParticipant {
   private async claim(scope: Scope, key: string, state: State, fields: Input) {
     if (!state.auth || !state.phone || !state.invitation) return rejectApplicant(409);
     await this.sessions.rate(scope, 'claim', state.phone, 12, 60);
-    const result = await this.fury.request(
-      scope,
-      claimInvitation,
-      {
-        referralToken: state.referral,
-        invitationId: state.invitation,
-        fields,
-      },
-      state
-    );
-    if (result.status === 'unclaimed' || result.status === 'expired') return { state: 'participantDetails' };
+    if (!this.destinyOrigin) return rejectApplicant(503);
+    // This flow stores auth only after its own OTP exchange. Reuse that session's
+    // verified account and phone when entering the private Destiny handoff.
+    const { userId } = applicantOtpClaims(scope, state, state.auth.token);
+    let result: unknown;
+    try {
+      const url = `${this.destinyOrigin}/v1/channel-partners/person-consent-handoffs/${state.invitation}/claim`;
+      const response = await this.fetcher(url, {
+        method: 'POST',
+        redirect: 'error',
+        cache: 'no-store',
+        signal: AbortSignal.timeout(5000),
+        headers: {
+          'Content-Type': 'application/json',
+          'x-gct-user-id': userId,
+          'x-gct-org-id': scope.organizationId,
+          'x-gct-phone': state.phone,
+        },
+        body: JSON.stringify({ input: { ...fields, referral_token: state.referral } }),
+      });
+      if ([404, 409, 422].includes(response.status)) return rejectApplicant(response.status === 422 ? 422 : 409);
+      result = response.ok ? await response.json() : null;
+    } catch (error) {
+      if (error instanceof ApplicantRequestError) throw error;
+      return rejectApplicant(503);
+    }
+    if (!isObject(result)) return rejectApplicant(503);
+    if (result.status === 'unclaimed') return { state: 'participantDetails' };
+    if (typeof result.status !== 'string' || !statuses.includes(result.status)) return rejectApplicant(503);
     if (typeof result.id !== 'string' || !receiptPattern.test(result.id)) return rejectApplicant(503);
     if (state.receipt && state.receipt !== result.id) return rejectApplicant(409);
     const view = await this.attach(scope, state, result.id);

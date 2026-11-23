@@ -1,5 +1,6 @@
 import { Body, Controller, type ExecutionContext, Header, Injectable, Post, Req, Res, UseGuards } from '@nestjs/common';
 import type { Request, Response } from 'express';
+import { privateServiceOrigin } from '../../../helpers/private-service-origin';
 import { MODULES } from '@modules/app/constants/modules';
 import { InitFeature } from '@modules/app/decorators/init-feature.decorator';
 import { InitModule } from '@modules/app/decorators/init-module';
@@ -32,33 +33,20 @@ const errors = new Map([
   [503, 'The operations service is unavailable. Try again later.'],
 ]);
 
-function privateOrigin(value: string): string | null {
-  const url = new URL(value);
-  return ['http:', 'https:'].includes(url.protocol) &&
-    url.hostname.endsWith('.svc.cluster.local') &&
-    url.href === `${url.origin}/`
-    ? url.origin
-    : null;
-}
-
 function settings() {
   const oidc = getConfiguredOidcSettings();
   if (!oidc) return null;
-  try {
-    const destinyOrigin = privateOrigin(process.env.TOOLJET_PARTNER_OPS_UPSTREAM_ORIGIN);
-    const thorOrigin = privateOrigin(process.env.TOOLJET_PARTNER_OPS_THOR_ORIGIN);
-    if (!destinyOrigin || !thorOrigin) return null;
-    return {
-      issuer: oidc.issuer,
-      clientId: oidc.clientId,
-      origin: oidc.origin,
-      workspaceId: oidc.workspaceId,
-      destinyOrigin,
-      thorOrigin,
-    };
-  } catch {
-    return null;
-  }
+  const destinyOrigin = privateServiceOrigin(process.env.TOOLJET_PARTNER_OPS_UPSTREAM_ORIGIN);
+  const thorOrigin = privateServiceOrigin(process.env.TOOLJET_PARTNER_OPS_THOR_ORIGIN);
+  if (!destinyOrigin || !thorOrigin) return null;
+  return {
+    issuer: oidc.issuer,
+    clientId: oidc.clientId,
+    origin: oidc.origin,
+    workspaceId: oidc.workspaceId,
+    destinyOrigin,
+    thorOrigin,
+  };
 }
 
 function positiveId(value: unknown): value is string {

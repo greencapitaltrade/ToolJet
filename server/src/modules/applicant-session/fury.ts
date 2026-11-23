@@ -126,27 +126,32 @@ export class ApplicantFury {
       { phone: identity.phone, otp },
       identity
     );
-    const token = result.token;
-    if (typeof token !== 'string' || token.length > 8192 || !jwtPattern.test(token)) return rejectApplicant(401);
-    try {
-      // Scope-check Fury's HTTPS reply. Heimdallr verifies the signature and
-      // the device again on every authenticated downstream request.
-      const claims = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));
-      if (
-        !claims ||
-        typeof claims !== 'object' ||
-        String(claims.org_id) !== scope.organizationId ||
-        !accountId.test(String(claims.user_id)) ||
-        claims.device !== identity.device ||
-        normalizeApplicantPhone(claims.phone) !== identity.phone ||
-        !Number.isSafeInteger(claims.exp)
-      )
-        return rejectApplicant(401);
-      const remaining = claims.exp - Math.floor(Date.now() / 1000);
-      if (remaining <= 0) return rejectApplicant(401);
-      return { token, seconds: Math.min(remaining, verifiedLifetime) };
-    } catch {
+    const { token, seconds } = applicantOtpClaims(scope, identity, result.token);
+    return { token, seconds };
+  }
+}
+
+/** Read claims from the direct Fury OTP reply or that same token held in Redis. */
+export function applicantOtpClaims(scope: ApplicantScope, identity: ApplicantIdentity, token: unknown) {
+  if (typeof token !== 'string' || token.length > 8192 || !jwtPattern.test(token)) return rejectApplicant(401);
+  try {
+    const claims = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString('utf8'));
+    const userId = String(claims?.user_id);
+    if (
+      !claims ||
+      typeof claims !== 'object' ||
+      String(claims.org_id) !== scope.organizationId ||
+      !accountId.test(userId) ||
+      claims.device !== identity.device ||
+      !identity.phone ||
+      normalizeApplicantPhone(claims.phone) !== identity.phone ||
+      !Number.isSafeInteger(claims.exp)
+    )
       return rejectApplicant(401);
-    }
+    const remaining = claims.exp - Math.floor(Date.now() / 1000);
+    if (remaining <= 0) return rejectApplicant(401);
+    return { token, userId, seconds: Math.min(remaining, verifiedLifetime) };
+  } catch {
+    return rejectApplicant(401);
   }
 }

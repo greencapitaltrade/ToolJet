@@ -11,6 +11,7 @@ jest.mock('@modules/app/ability/guard', () => ({ FeatureAbilityGuard: class {} }
 jest.mock('@modules/app/constants', () => ({ FEATURE_KEY: { DEALER_ONBOARDING: 'dealer-onboarding' } }));
 jest.mock('@modules/redis/service', () => ({ RedisService: class {} }));
 
+const destinyOrigin = 'http://destiny.test.svc.cluster.local';
 const referralToken = `v3.${'a'.repeat(45)}`;
 const consentId = '006a83f7-03c5-4a10-ba6a-df099ef8f98d';
 const scope = {
@@ -22,7 +23,7 @@ const scope = {
   signingOrigin: 'https://signing.example.test',
 };
 
-function setup() {
+function setup(upstreamOrigin = destinyOrigin) {
   const keys = new Map<string, string>();
   const redis = {
     async call(command: string, ...args: string[]) {
@@ -51,13 +52,23 @@ function setup() {
   let status = 'accepted';
   let selfieAvailable = false;
   let signUrl = 'https://signing.example.test/synthetic';
-  const fetcher = jest.fn(async (_url: string, init: RequestInit) => {
+  let validOtp = true;
+  const fetcher = jest.fn(async (url: string, init: RequestInit) => {
+    if (url.startsWith(destinyOrigin)) {
+      const packet = JSON.parse(init.body as string);
+      return Response.json(
+        'consent' in packet.input
+          ? { status: 'pending', id: consentId, details: 'private result' }
+          : { status: 'unclaimed' }
+      );
+    }
     const { query, variables } = JSON.parse(init.body as string);
     if (query.includes('dealerReferralEligibility'))
       return Response.json({ data: { dealerReferralEligibility: { organizationId: '39', eligible: true } } });
     if (query.includes('sessionCreateV2'))
       return Response.json({ data: { sessionCreateV2: { success: true, status: 'otp_sent' } } });
     if (query.includes('sessionPut')) {
+      if (!validOtp) return Response.json({ errors: [{ message: 'invalid OTP' }] });
       const claims = {
         device: (init.headers as Record<string, string>).device,
         phone: variables.phone,
@@ -68,14 +79,6 @@ function setup() {
       const token = `header.${Buffer.from(JSON.stringify(claims)).toString('base64url')}.signature`;
       return Response.json({ data: { sessionPut: { token } } });
     }
-    if (query.includes('dealerParticipantClaim'))
-      return Response.json({
-        data: {
-          dealerParticipantClaim: Object.keys(variables.fields).length
-            ? { status: 'pending', id: consentId }
-            : { status: 'unclaimed' },
-        },
-      });
     if (query.includes('dealerParticipantAttach')) {
       if (!owner) return Response.json({ errors: [{ message: 'private upstream error' }] });
       return Response.json({
@@ -98,7 +101,7 @@ function setup() {
       data: { dealerParticipantAction: { status: 'requested', redirectUrl: signUrl, owner: 'private' } },
     });
   }) as jest.MockedFunction<typeof fetch>;
-  const service = new DealerParticipant(redis, fetcher);
+  const service = new DealerParticipant(redis, fetcher, upstreamOrigin);
   let handle: string | undefined;
   const set = (id: string) => {
     handle = id;
@@ -117,8 +120,14 @@ function setup() {
     });
   };
   const requests = () =>
-    fetcher.mock.calls.map(([, init]) => ({ ...JSON.parse(init.body as string), headers: init.headers }));
+    fetcher.mock.calls
+      .filter(([url]) => !String(url).startsWith(destinyOrigin))
+      .map(([, init]) => ({ ...JSON.parse(init.body as string), headers: init.headers }));
   return {
+    claims: () => fetcher.mock.calls.filter(([url]) => String(url).startsWith(destinyOrigin)),
+    denyOtp: () => {
+      validOtp = false;
+    },
     invoke,
     login,
     prepareSelfie: () => {
@@ -237,8 +246,8 @@ it('keeps participant credentials, cookies and telemetry separate from the deale
   ).toMatchObject({ body: '[REDACTED]', rawBody: '[REDACTED]' });
 });
 
-it('checks a handoff only after independent OTP and keeps its recovered receipt server-side', async () => {
-  const { invoke, requests } = setup();
+it('sends initial claims privately using the OTP identity, stored invite and allowlisted details', async () => {
+  const { invoke, requests, claims } = setup();
   const invitationId = 'b62cbf35-1ff2-44ce-bd21-77a8f400a9bf';
   const olderToken = `v2.${'a'.repeat(45)}`;
   await expect(invoke('entry', { invitationId }, { referralToken: olderToken })).rejects.toMatchObject({ status: 400 });
@@ -246,18 +255,52 @@ it('checks a handoff only after independent OTP and keeps its recovered receipt 
   await expect(invoke('entry', { invitationId }, { referralToken })).resolves.toEqual({ state: 'phone' });
   await expect(invoke('claim', { consent: true })).rejects.toMatchObject({ status: 409 });
   await invoke('requestOtp', { phone: '9999900001' });
-  expect(requests().some(({ query }) => query.includes('dealerParticipantClaim'))).toBe(false);
+  expect(claims()).toHaveLength(0);
   await expect(invoke('verifyOtp', { otp: '123456' })).resolves.toEqual({ state: 'participantEntry' });
   await expect(invoke('status')).resolves.toEqual({ state: 'participantDetails' });
   await expect(invoke('attach', { consentId })).rejects.toMatchObject({ status: 409 });
-  await expect(
-    invoke('claim', { consent: true, name: 'Synthetic user', role: 'Director', kyc_contact: 'person@example.test' })
-  ).resolves.toMatchObject({ state: 'participant' });
-  expect(
-    requests()
-      .filter(({ query }) => query.includes('dealerParticipantClaim'))
-      .slice(-1)[0].variables
-  ).toMatchObject({ referralToken, invitationId });
+  await expect(invoke('claim', { consent: true, organizationId: '400' })).rejects.toMatchObject({ status: 400 });
+  const details = { consent: true, name: 'Synthetic user', role: 'Director', kyc_contact: 'person@example.test' };
+  await expect(invoke('claim', details)).resolves.toMatchObject({ state: 'participant' });
+  expect(claims()).toHaveLength(2);
+  for (const [url, init] of claims()) {
+    expect(url).toBe(`${destinyOrigin}/v1/channel-partners/person-consent-handoffs/${invitationId}/claim`);
+    expect(init).toMatchObject({
+      method: 'POST',
+      redirect: 'error',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-gct-org-id': '39',
+        'x-gct-user-id': '21',
+        'x-gct-phone': '9999900001',
+      },
+    });
+    expect(Object.keys(init?.headers ?? {})).toHaveLength(4);
+  }
+  expect(JSON.parse(claims()[0][1]?.body as string)).toEqual({ input: { referral_token: referralToken } });
+  expect(JSON.parse(claims()[1][1]?.body as string)).toEqual({ input: { referral_token: referralToken, ...details } });
+  expect(requests().filter(({ query }) => query.includes('sessionPut'))).toHaveLength(1);
+  expect(requests().filter(({ query }) => query.includes('dealerParticipantClaim'))).toHaveLength(0);
+  expect(requests().filter(({ query }) => query.includes('dealerParticipantAttach'))).toHaveLength(1);
+});
+
+it('rejects an unverified OTP and a claim configured with a public origin', async () => {
+  const invite = { invitationId: 'b62cbf35-1ff2-44ce-bd21-77a8f400a9bf' };
+  const otp = setup();
+  await otp.invoke('entry', invite, { referralToken });
+  await otp.invoke('requestOtp', { phone: '9999900001' });
+  otp.denyOtp();
+  await expect(otp.invoke('verifyOtp', { otp: '123456' })).rejects.toMatchObject({ status: 401 });
+  await expect(otp.invoke('claim', { consent: true })).rejects.toMatchObject({ status: 409 });
+  expect(otp.claims()).toHaveLength(0);
+  const publicOrigin = setup('https://destiny.example.test');
+  await publicOrigin.invoke('entry', invite, { referralToken });
+  await publicOrigin.invoke('requestOtp', { phone: '9999900001' });
+  await publicOrigin.invoke('verifyOtp', { otp: '123456' });
+  const beforeStatus = publicOrigin.requests().length;
+  await expect(publicOrigin.invoke('status')).rejects.toMatchObject({ status: 503 });
+  expect(publicOrigin.claims()).toHaveLength(0);
+  expect(publicOrigin.requests()).toHaveLength(beforeStatus);
 });
 
 it('requires an approved, fresh participant receipt before reading and forwarding only one bounded JPEG', async () => {
