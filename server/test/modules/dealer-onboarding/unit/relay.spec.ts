@@ -92,6 +92,16 @@ function setup(settings = config) {
     }
     if (query.includes('dealerOwnerParticipant'))
       return Response.json({ data: { dealerOwnerParticipant: { status: 'invited', id: draft.id } } });
+    if (query.includes('dealerGstAa')) {
+      const requestId = 'e88edd28-b86e-4ca8-ad22-2625ccdf90af';
+      const choice = { key: 'a'.repeat(64), maskedGstin: '07XXXXXXXXXX1Z1', transactions: ['private'] };
+      const result = {
+        START: { status: 'pending', requestId, consentUrl: 'https://consent.example.test/start', accounts: [] },
+        CHECK: { status: 'completed', requestId, accounts: [choice] },
+        ATTACH: { status: 'attached', accounts: [] },
+      }[variables.action];
+      return Response.json({ data: { dealerGstAa: result } });
+    }
     if (query.includes('dealerOwnerCompletion'))
       return Response.json({
         data: {
@@ -300,6 +310,40 @@ it('rejects a foreign invite, unverified writes and browser-supplied identity', 
   await expect(call('start', { ...details, parent_id: '99' })).rejects.toMatchObject({ status: 400 });
   await expect(call('step', { nodeId: 'sign' })).rejects.toMatchObject({ status: 400 });
   expect(fetcher).toHaveBeenCalledTimes(2);
+});
+
+it('uses the existing applicant session and exact owned case for GST AA consent and attachment', async () => {
+  const { call, fetcher, persisted } = setup();
+  const choice = { key: 'a'.repeat(64), maskedGstin: '07XXXXXXXXXX1Z1' };
+  await expect(call('gstStart')).rejects.toMatchObject({ status: 409 });
+  await call('entry', {}, { referralToken });
+  await call('requestOtp', { phone: '9999900001' });
+  await call('verifyOtp', { otp: '123456' });
+  await expect(call('gstStart')).rejects.toMatchObject({ status: 409 });
+  await call('lookup', { pan: 'AAAFA1234A' });
+  await call('start', details);
+  await expect(call('gstStart', { draftId: 'foreign' })).rejects.toMatchObject({ status: 400 });
+  await expect(call('gstStart')).resolves.toEqual({
+    state: 'gstAa',
+    status: 'pending',
+    consentUrl: 'https://consent.example.test/start',
+    accounts: [],
+  });
+  await expect(call('gstStatus')).resolves.toEqual({ state: 'gstAa', status: 'completed', accounts: [choice] });
+  await expect(call('gstAttach', { account: choice.key })).resolves.toEqual({
+    state: 'gstAa',
+    status: 'attached',
+    accounts: [],
+  });
+  const calls = fetcher.mock.calls
+    .map(([, req]) => JSON.parse(req.body))
+    .filter(({ query }) => query.includes('dealerGstAa'));
+  expect(calls.map(({ variables }) => variables)).toEqual([
+    { draftId: draft.id, action: 'START' },
+    { draftId: draft.id, action: 'CHECK', requestId: 'e88edd28-b86e-4ca8-ad22-2625ccdf90af' },
+    { draftId: draft.id, action: 'ATTACH', requestId: 'e88edd28-b86e-4ca8-ad22-2625ccdf90af', account: choice.key },
+  ]);
+  expect(persisted()).not.toMatch(/consent.example.test|07XXXXXXXXXX1Z1|private/);
 });
 
 it('remains off without an exact HTTPS scope', () => {

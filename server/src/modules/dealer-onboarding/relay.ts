@@ -17,6 +17,7 @@ export const DEALER_OWNER_KYC_ORIGIN = 'TOOLJET_DEALER_OWNER_KYC_ORIGIN';
 const panPattern = /^[A-Z]{3}[CFP][A-Z][0-9]{4}[A-Z]$/;
 const gstPattern = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]Z[0-9A-Z]$/;
 const uuidPattern = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
+const gstChoicePattern = /^[a-f0-9]{64}$/;
 const fieldLimits = { businessName: 255, applicantName: 255, applicantRole: 30, email: 254, gstin: 15, firmType: 20 };
 const entityFieldNames = ['premises', 'cin', 'llpin'];
 const guestTtl = 600;
@@ -30,6 +31,7 @@ type State = {
   auth?: { token: string };
   pan?: string;
   draftId?: string;
+  gstRequestId?: string;
 };
 type VerifiedOwner = State & { phone: string };
 type SetCookie = (id: string, ttl: number) => void;
@@ -124,6 +126,15 @@ const docs = {
       dealerEntityDetailsSave(draftId: $draftId, fields: $fields) { ${draftSelection} }
     }`,
   },
+  gst: {
+    field: 'dealerGstAa',
+    timeoutMs: 55_000,
+    query: `mutation DealerGstAa($draftId: ID!, $action: DealerGstAaAction!, $requestId: ID, $account: String) {
+      dealerGstAa(draftId: $draftId, action: $action, requestId: $requestId, account: $account) {
+        status requestId consentUrl accounts { key maskedGstin }
+      }
+    }`,
+  },
 };
 
 function object(value: unknown): value is Payload {
@@ -157,6 +168,7 @@ type Operation =
   | { kind: 'verifyOtp'; otp: string }
   | { kind: 'lookup'; pan: string }
   | { kind: 'saveEntityDetails'; fields: Fields }
+  | { kind: 'gst'; action: 'STATUS' | 'START' | 'ATTACH'; account?: string }
   | { kind: 'start'; fields: Fields }
   | { kind: 'completion'; operation: CompletionOperation }
   | { kind: 'ownerParticipant'; action: 'INVITE' | 'LIST' | 'ACCEPT'; fields: Payload };
@@ -176,6 +188,15 @@ function operation(value: unknown): Operation {
   }
   if ('referralToken' in value) return rejectApplicant(400);
   if (value.operation === 'status' && !keys.length) return { kind: 'status' };
+  if (value.operation === 'gstStatus' && !keys.length) return { kind: 'gst', action: 'STATUS' };
+  if (value.operation === 'gstStart' && !keys.length) return { kind: 'gst', action: 'START' };
+  if (
+    value.operation === 'gstAttach' &&
+    keys.length === 1 &&
+    typeof fields.account === 'string' &&
+    gstChoicePattern.test(fields.account)
+  )
+    return { kind: 'gst', action: 'ATTACH', account: fields.account };
   if (
     !keys.length &&
     typeof value.operation === 'string' &&
@@ -393,6 +414,54 @@ export class DealerOnboarding {
     return this.lookup(scope, state, key, state.pan);
   }
 
+  private async gst(scope: ApplicantScope, state: State, key: string, command: Extract<Operation, { kind: 'gst' }>) {
+    if (!state.draftId || !state.phone || (command.action === 'ATTACH' && !state.gstRequestId))
+      return rejectApplicant(409);
+    await this.sessions.rate(scope, 'dealer-gst', state.phone, 20, 60);
+    const action = state.gstRequestId && command.action === 'STATUS' ? 'CHECK' : command.action;
+    const result = await this.fury.request(
+      scope,
+      docs.gst,
+      {
+        draftId: state.draftId,
+        action,
+        ...(state.gstRequestId && { requestId: state.gstRequestId }),
+        ...(command.account && { account: command.account }),
+      },
+      state
+    );
+    const { status, requestId, consentUrl, accounts } = result;
+    if (
+      typeof status !== 'string' ||
+      !['not_started', 'pending', 'completed', 'failed', 'cancelled', 'unknown', 'attached'].includes(status) ||
+      (requestId != null && (typeof requestId !== 'string' || !uuidPattern.test(requestId))) ||
+      !Array.isArray(accounts)
+    )
+      return rejectApplicant(503);
+    if (typeof requestId === 'string' && requestId !== state.gstRequestId)
+      await this.sessions.save(key, { ...state, gstRequestId: requestId });
+    const choices = accounts
+      .filter(
+        (account: unknown) =>
+          object(account) &&
+          typeof account.key === 'string' &&
+          gstChoicePattern.test(account.key) &&
+          typeof account.maskedGstin === 'string' &&
+          /^[0-9]{2}X{10}[A-Z0-9*]{3}$/.test(account.maskedGstin)
+      )
+      .map(({ key, maskedGstin }) => ({ key, maskedGstin }));
+    let redirect;
+    if (status === 'pending' && typeof consentUrl === 'string' && consentUrl.length <= 4096) {
+      try {
+        const url = new URL(consentUrl);
+        if (url.protocol === 'https:' && !url.username && !url.password) redirect = url.href;
+      } catch {
+        return rejectApplicant(503);
+      }
+    }
+    return { state: 'gstAa', status, accounts: choices, ...(redirect && { consentUrl: redirect }) };
+  }
+
   private async completion(scope: DealerScope, state: State, operation: CompletionOperation) {
     if (!state.draftId || !state.phone) return rejectApplicant(409);
     await this.sessions.rate(scope, 'owner-completion', state.phone, 20, 60);
@@ -605,6 +674,7 @@ export class DealerOnboarding {
         return { state: 'pan' };
       }
       if (!state.auth) return rejectApplicant(409);
+      if (command.kind === 'gst') return this.gst(scope, state, key, command);
       if (command.kind === 'completion') return this.completion(scope, state, command.operation);
       if (command.kind === 'ownerParticipant') {
         if (!state.draftId || !state.phone) return rejectApplicant(409);
