@@ -10,6 +10,7 @@ import { ApplicantRedis, ApplicantSessions, newApplicantHandle } from '../applic
 import { maxApplicantDocumentBytes } from '../applicant-session/upload';
 
 export const BORROWER_ONBOARDING_ENV = 'TOOLJET_BORROWER_ONBOARDING';
+export const maxBorrowerSelfieBytes = 96 * 1024;
 
 const keyPattern = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 const nodePattern = /^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}$/;
@@ -49,6 +50,7 @@ const controls = {
     kind: 'AA',
     label: 'Give bank-statement consent',
   },
+  selfie: { type: 'SELFIE', kind: 'CAPTURE', label: 'Take your selfie' },
   form: { type: 'FORM', kind: 'FORM', label: 'Save details' },
   agreement: { type: 'AGREEMENT', kind: 'DIGIO', label: 'Review agreement' },
 } as const;
@@ -277,7 +279,8 @@ export class BorrowerOnboarding {
         const control = controls[stepType as keyof typeof controls];
         const kinds = step.allowedKinds;
         const explicitKind = Array.isArray(kinds) && kinds.includes(control.kind);
-        const kindAllowed = explicitKind || (kinds == null && stepType !== 'kyc_pan' && stepType !== 'bank_statement');
+        const kindAllowed =
+          explicitKind || (kinds == null && !['kyc_pan', 'bank_statement', 'selfie'].includes(stepType));
         const docs = step.documentRequirements;
         const pendingManual =
           stepType === 'document_collection' && Array.isArray(docs)
@@ -310,11 +313,12 @@ export class BorrowerOnboarding {
               : undefined;
         if (
           kindAllowed &&
-          (stepType === 'form'
-            ? fields
-            : stepType === 'document_collection'
-              ? digilocker
-              : upstreamSteps.filter((candidate) => candidate?.stepType === stepType).length === 1)
+          (stepType === 'selfie' ||
+            (stepType === 'form'
+              ? fields
+              : stepType === 'document_collection'
+                ? digilocker
+                : upstreamSteps.filter((candidate) => candidate?.stepType === stepType).length === 1))
         ) {
           available = true;
           actions.push({ ...control, nodeId, ...(fields && { fields }) });
@@ -350,7 +354,12 @@ export class BorrowerOnboarding {
     return {
       id,
       steps,
-      actions: actions.map(({ nodeId, label, fields }) => ({ nodeId, label, ...(fields && { fields }) })),
+      actions: actions.map(({ nodeId, label, fields, type }) => ({
+        nodeId,
+        label,
+        ...(fields && { fields }),
+        ...(type === 'SELFIE' && { camera: true }),
+      })),
       ...(documentUploads.length > 0 && { documentUploads }),
       ...(documentRequest && { documentRequest }),
     };
@@ -360,7 +369,8 @@ export class BorrowerOnboarding {
     const view = await this.journey(config, state, cacheKey);
     const action = view.actions.find(({ nodeId }) => nodeId === selected.nodeId);
     if (!action) return rejected(409);
-    if (!keys(selected.values, action.fields?.map(({ name }) => name) ?? [])) return rejected(400);
+    if (action.type === 'SELFIE' || !keys(selected.values, action.fields?.map(({ name }) => name) ?? []))
+      return rejected(400);
     let data: RecordValue = { redirectUrl: config.returnUrl };
     if (action.type === 'BANK_STATEMENT') {
       if (!state.phone) return rejected(409);
@@ -385,11 +395,22 @@ export class BorrowerOnboarding {
         ),
       };
     }
+    return this.submitStep(config, state, cacheKey, view.id, action, data);
+  }
+
+  private async submitStep(
+    config: Config,
+    state: State,
+    cacheKey: string,
+    applicationId: number,
+    action: Action,
+    data: RecordValue
+  ) {
     const result = await this.gateway(
       config,
       'executeFlowStep',
       {
-        application_id: view.id,
+        application_id: applicationId,
         type: action.type,
         kind: action.kind,
         data,
@@ -449,6 +470,36 @@ export class BorrowerOnboarding {
       if ([401, 403, 404, 409, 422].includes(response.status)) return rejected(response.status);
       if (!response.ok || (await response.json())?.attached !== true) return rejected(503);
       return { state: 'journey', journey: await this.view(config, state, key) };
+    });
+  }
+
+  async uploadSelfie(config: Config, read: () => Promise<unknown>, sessionId: string | undefined) {
+    const key = this.sessions.key(config, sessionId);
+    if (!sessionId || !key) return rejected(409);
+    return this.sessions.withLock(key, async () => {
+      const state = await this.sessions.get(key);
+      if (!state?.auth?.applicationId) return rejected(409);
+      await this.sessions.rate(config, 'upload', sessionId, 20, 120);
+      const input = await read();
+      if (
+        !object(input) ||
+        !keys(input, ['nodeId', 'file']) ||
+        typeof input.nodeId !== 'string' ||
+        !nodePattern.test(input.nodeId) ||
+        !Buffer.isBuffer(input.file) ||
+        !input.file.length ||
+        input.file.length > maxBorrowerSelfieBytes
+      )
+        return rejected(400);
+
+      const { nodeId, file } = input;
+      const current = await this.journey(config, state, key);
+      const action = current.actions.find((step) => step.type === 'SELFIE' && step.nodeId === nodeId);
+      if (!action) return rejected(409);
+      return this.submitStep(config, state, key, current.id, action, {
+        nodeId,
+        selfie: `data:image/jpeg;base64,${file.toString('base64')}`,
+      });
     });
   }
 

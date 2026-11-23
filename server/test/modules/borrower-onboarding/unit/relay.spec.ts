@@ -277,6 +277,54 @@ it('offers pending DigiLocker and manual evidence on the same configured node', 
   expect(submissions()).toHaveLength(1);
 });
 
+it('accepts the configured active camera node only through the authenticated selfie upload', async () => {
+  const { call, fetcher, flow, getCookie, service } = setup();
+  const selfie = {
+    nodeId: 'capture',
+    stepType: 'selfie',
+    label: 'Selfie',
+    status: 'active',
+    allowedKinds: ['CAPTURE'],
+  };
+  flow.steps.push(selfie, { ...selfie, nodeId: 'future', status: 'pending' });
+  const file = Buffer.from([0xff, 0xd8, 0xff, 0xff, 0xd9]);
+  const read = jest.fn().mockResolvedValue({ nodeId: 'capture', file });
+
+  await call('entry', {}, { referralToken });
+  await expect(service.uploadSelfie(config!, read, getCookie())).rejects.toMatchObject({ status: 409 });
+  expect(read).not.toHaveBeenCalled();
+  await call('requestOtp', { phone: '9000000001' });
+  await expect(call('verifyOtp', { otp: '123456' })).resolves.toMatchObject({
+    journey: {
+      actions: [
+        expect.objectContaining({ nodeId: 'vehicle' }),
+        { nodeId: 'capture', label: 'Take your selfie', camera: true },
+      ],
+    },
+  });
+  await expect(call('step', { nodeId: 'capture', values: {} })).rejects.toMatchObject({ status: 400 });
+  await expect(
+    service.uploadSelfie(config!, async () => ({ nodeId: 'future', file }), getCookie())
+  ).rejects.toMatchObject({ status: 409 });
+  await expect(
+    service.uploadSelfie(config!, async () => ({ nodeId: 'capture', file, applicationId: 999 }), getCookie())
+  ).rejects.toMatchObject({ status: 400 });
+  await service.uploadSelfie(config!, read, getCookie());
+  const submissions = fetcher.mock.calls
+    .map(([, request]) => ({ headers: request.headers, ...JSON.parse(request.body) }))
+    .filter(({ query }) => query.includes('executeFlowStep'));
+  expect(submissions).toHaveLength(1);
+  expect(submissions[0].headers.cookie).toMatch(/^authorization=.+; device=/);
+  expect(submissions[0].variables).toEqual({
+    application_id: 701,
+    type: 'SELFIE',
+    kind: 'CAPTURE',
+    data: { nodeId: 'capture', selfie: 'data:image/jpeg;base64,/9j//9k=' },
+  });
+  selfie.allowedKinds = [];
+  await expect(service.uploadSelfie(config!, read, getCookie())).rejects.toMatchObject({ status: 409 });
+});
+
 it('returns the scoped bank statement request and clears it from a subsequent server read', async () => {
   const { call, fetcher, flow, getCookie, service } = setup();
   const bank = {

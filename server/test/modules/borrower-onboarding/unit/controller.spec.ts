@@ -26,7 +26,7 @@ function fixture(config: string | undefined = settings) {
     new ConfigService(config ? { TOOLJET_BORROWER_ONBOARDING: config } : {}),
     { getClient: () => redis } as unknown as RedisService
   );
-  function invoke(headers: Record<string, string> = {}, body: Record<string, unknown> = {}, upload = false) {
+  function invoke(headers: Record<string, string> = {}, body: Record<string, unknown> = {}, route = 'handle') {
     const request = {
       get: (name: string) => (name === 'origin' ? (headers[name] ?? origin) : headers[name]),
       is: (type: string) => headers['content-type'] === type,
@@ -39,8 +39,8 @@ function fixture(config: string | undefined = settings) {
       json: jest.fn().mockReturnThis(),
       cookie: jest.fn().mockReturnThis(),
     };
-    const handler = upload ? next.upload.bind(next) : next.handle.bind(next);
-    return { response, done: handler(request as unknown as Request, response as unknown as Response) };
+    const handler = route === 'selfie' ? next.uploadSelfie : route === 'document' ? next.upload : next.handle;
+    return { response, done: handler.call(next, request as unknown as Request, response as unknown as Response) };
   }
   return { invoke, redis };
 }
@@ -68,20 +68,23 @@ it('rejects exact configured route boundary failures before reaching Redis', asy
   expect(disabled.response.status).toHaveBeenCalledWith(404);
 });
 
-it('requires the exact browser origin, multipart and a verified session for document uploads', async () => {
-  const { invoke, redis } = fixture();
-  for (const [headers, status] of [
-    [{ origin: 'https://another.example.test', 'content-type': 'multipart/form-data' }, 403],
-    [{ origin, 'content-type': 'application/json' }, 415],
-    [{ origin, 'content-type': 'multipart/form-data' }, 409],
-  ] as const) {
-    const { response, done } = invoke(headers, {}, true);
-    await done;
-    expect(response.status).toHaveBeenCalledWith(status);
-    expect(response.json).toHaveBeenCalledWith({ error: 'Borrower onboarding request unavailable' });
+it.each(['document', 'selfie'])(
+  'requires the exact origin, multipart and a verified session for %s uploads',
+  async (route) => {
+    const { invoke, redis } = fixture();
+    for (const [headers, status] of [
+      [{ origin: 'https://another.example.test', 'content-type': 'multipart/form-data' }, 403],
+      [{ origin, 'content-type': 'application/json' }, 415],
+      [{ origin, 'content-type': 'multipart/form-data' }, 409],
+    ] as const) {
+      const { response, done } = invoke(headers, {}, route);
+      await done;
+      expect(response.status).toHaveBeenCalledWith(status);
+      expect(response.json).toHaveBeenCalledWith({ error: 'Borrower onboarding request unavailable' });
+    }
+    expect(redis.call).not.toHaveBeenCalled();
   }
-  expect(redis.call).not.toHaveBeenCalled();
-});
+);
 
 it('issues only an opaque host-only session cookie on an eligible exact-origin entry', async () => {
   jest

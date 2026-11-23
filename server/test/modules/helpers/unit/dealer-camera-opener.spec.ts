@@ -10,11 +10,12 @@ const viewerPath = '/applications/e2aa7e52-1fe7-4aac-b6ac-137a0aba8151/dealer-ad
 const viewerUrl = `${origin}${viewerPath}`;
 const header = 'Cross-Origin-Opener-Policy';
 
-function fixture(viewer?: string, tooljetHost = origin, subpath?: string) {
+function fixture(viewer?: string, tooljetHost = origin, subpath?: string, borrower?: string) {
   const app = new ExpressAdapter();
   const config = new ConfigService({
     TOOLJET_HOST: tooljetHost,
     TOOLJET_DEALER_CAMERA_VIEWER_URL: viewer,
+    TOOLJET_BORROWER_ONBOARDING: borrower,
     SUB_PATH: subpath,
   });
   setSecurityHeaders(app as unknown as NestExpressApplication, config, {
@@ -95,5 +96,27 @@ describe('dealer camera viewer opener policy', () => {
 
   it.each(['head', 'post'] as const)('keeps Helmet defaults on %s requests', async (method) => {
     await fixture(viewerUrl)[method](viewerPath).set('Host', host).expect(header, 'same-origin');
+  });
+
+  it('uses the enabled borrower relay return page as the only additional camera viewer', async () => {
+    const borrowerPath = '/applications/example/documentation';
+    const borrower = JSON.stringify({
+      origin,
+      organizationId: '39',
+      furyUrl: 'https://gateway.example.test/v2/graphql',
+      lspSecret: 'fixture-private-credential',
+      returnUrl: origin + borrowerPath,
+      providerOrigins: ['https://provider.example.test'],
+    });
+    const app = fixture(viewerUrl, origin, undefined, borrower);
+    await app.get(borrowerPath).set('Host', host).expect(header, 'same-origin-allow-popups');
+    await app.get(viewerPath).set('Host', host).expect(header, 'same-origin-allow-popups');
+    await app.get('/applications/example/another-page').set('Host', host).expect(header, 'same-origin');
+    await app.get(borrowerPath).set('Host', 'other.example.test').expect(header, 'same-origin');
+    await app.post(borrowerPath).set('Host', host).expect(header, 'same-origin');
+    await fixture(viewerUrl, origin, undefined, JSON.stringify({ returnUrl: origin + borrowerPath }))
+      .get(borrowerPath)
+      .set('Host', host)
+      .expect(header, 'same-origin');
   });
 });
