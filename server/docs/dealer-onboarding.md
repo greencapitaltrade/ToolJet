@@ -98,3 +98,16 @@ and the same Aadhaar evidence after matching.
 
 The staged app remains private. Native viewer and provider verification are
 required before enabling this workflow.
+
+## Dealer owner's own identity
+
+`POST /api/dealer-onboarding/identity` uses the authenticated dealer cookie and
+accepts only `{ action: 'STATUS' | 'START' | 'SYNC' }`. A separate
+`POST /api/dealer-onboarding/identity/selfie` accepts one JPEG of up to 96 KiB.
+These requests bypass RunJS. The relay rechecks the current case and allowed
+action through Fury before reading or sending camera bytes. Keep
+`TOOLJET_DEALER_OWNER_KYC_ORIGIN` unset until the exact managed HTTPS origin
+matches Fury's `FURY_DEALER_OWNER_KYC_ORIGIN` and the downstream provider is
+verified. The browser receives a redirect only for an eligible DigiLocker
+start. The relay neither stores uploads nor exposes provider receipt or
+document references.

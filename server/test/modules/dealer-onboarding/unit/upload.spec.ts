@@ -3,7 +3,7 @@ import * as express from 'express';
 import type { Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { handleApplicantRequest } from '../../../../src/modules/applicant-session/http';
-import { parseDealerUpload, parseParticipantSelfie } from '../../../../src/modules/dealer-onboarding/upload';
+import { parseDealerUpload, parseDealerSelfie } from '../../../../src/modules/dealer-onboarding/upload';
 
 const scope = {
   origin: 'https://app.example.test',
@@ -16,7 +16,7 @@ const jpeg = Uint8Array.from([255, 216, 255, 0, 255, 217]);
 let server: Server;
 let endpoint: string;
 const parse = jest.fn(parseDealerUpload);
-const parseSelfie = jest.fn(parseParticipantSelfie);
+const parseSelfie = jest.fn(parseDealerSelfie);
 
 beforeAll(async () => {
   const app = express();
@@ -50,7 +50,7 @@ beforeAll(async () => {
     )
   );
   await new Promise<void>((resolve, reject) => {
-    server = app.listen(0, '127.0.0.1', (error) => (error ? reject(error) : resolve()));
+    server = app.listen(0, '127.0.0.1', resolve).once('error', reject);
   });
   endpoint = `http://127.0.0.1:${(server.address() as AddressInfo).port}/`;
 });

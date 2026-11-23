@@ -43,6 +43,14 @@ export function applicantScope(value: Payload): ApplicantScope | null {
   }
 }
 
+export function exactHttpsOrigin(value: unknown): value is string {
+  try {
+    return typeof value === 'string' && value.startsWith('https://') && new URL(value).origin === value;
+  } catch {
+    return false;
+  }
+}
+
 export class ApplicantRequestError extends Error {
   constructor(readonly status: number) {
     super('Applicant request unavailable');
