@@ -1,4 +1,8 @@
-import { sanitizeTraceObject as sanitizeObject } from './sanitize';
+import {
+  isApplicantOnboardingRequest,
+  isConfiguredOidcRequest,
+  sanitizeTraceObject as sanitizeObject,
+} from './sanitize';
 import { CompositePropagator, W3CTraceContextPropagator, W3CBaggagePropagator } from '@opentelemetry/core';
 import { getWorkspaceLabel, getWorkspaceNameLabel } from './org-plan-cache';
 import {
@@ -84,13 +88,24 @@ function createSDK(): NodeSDK {
       new HttpInstrumentation({
         ignoreIncomingRequestHook: (request: any) => {
           const url = request.url || '';
-          return url.includes('/api/health') || url.includes('/api/mcp-oauth/');
+          return (
+            url.includes('/api/health') ||
+            url.includes('/api/mcp-oauth/') ||
+            isApplicantOnboardingRequest(url) ||
+            isConfiguredOidcRequest(url)
+          );
         },
       }),
       new ExpressInstrumentation({
         requestHook: (span: Span, { request }) => {
           const path = request.route?.path || request.path || '';
-          if (path.includes('/mcp-oauth/')) return;
+          if (
+            path.includes('/mcp-oauth/') ||
+            isApplicantOnboardingRequest(request.originalUrl || path) ||
+            isConfiguredOidcRequest(request.originalUrl || path)
+          ) {
+            return;
+          }
           if (path.startsWith('/api/') && path !== '/api/health') {
             span.updateName(`${request.method} ${path}`);
             span.setAttribute('http.route', path);

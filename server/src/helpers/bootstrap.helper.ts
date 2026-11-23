@@ -13,6 +13,8 @@ import * as Sentry from '@sentry/nestjs';
 import { DataSource } from 'typeorm';
 import { LoggerService } from '@nestjs/common';
 import { Request, Response, NextFunction } from 'express';
+import { isApplicantOnboardingRequest, isConfiguredOidcRequest } from '@otel/sanitize';
+import { BORROWER_ONBOARDING_ENV, parseBorrowerOnboardingConfig } from '@modules/borrower-onboarding/relay';
 
 /**
  * Creates a logger instance with a specific context
@@ -246,6 +248,8 @@ export function initSentry(logger: any, configService: ConfigService) {
       environment: configService.get<string>('NODE_ENV') || 'development',
       debug: !!configService.get<string>('SENTRY_DEBUG'),
       sendDefaultPii: true,
+      beforeSend: (event) =>
+        isApplicantOnboardingRequest(event.request?.url) || isConfiguredOidcRequest(event.request?.url) ? null : event,
       // OTel SDK (otel/tracing.ts) owns tracing; else Sentry double-registers spans, splits every trace in two.
       skipOpenTelemetrySetup: true,
     });
@@ -404,6 +408,24 @@ export function setupCsrfOriginCheck(app: NestExpressApplication, configService:
   });
 }
 
+function cameraViewerPath(value: string | undefined, host: URL, subPath: string | undefined): string | undefined {
+  if (host.protocol !== 'https:' || !value || !URL.canParse(value)) return;
+
+  const viewer = new URL(value);
+  const prefix = `${(subPath || '').replace(/\/$/, '')}/applications/`;
+  if (
+    viewer.origin !== host.origin ||
+    value !== `${viewer.origin}${viewer.pathname}` ||
+    !viewer.pathname.startsWith(prefix)
+  )
+    return;
+
+  const page = /^[\w-]+\/([\w-]+)$/.exec(viewer.pathname.slice(prefix.length))?.[1];
+  if (!page || /^(login|signup|forgot-password|reset-password)$/i.test(page)) return;
+
+  return viewer.pathname;
+}
+
 /**
  * Sets up security headers including CORS and CSP
  */
@@ -544,9 +566,19 @@ export function setSecurityHeaders(app: NestExpressApplication, configService: C
     logger.log(`Frame embedding ${configService.get('DISABLE_APP_EMBED') !== 'true' ? 'enabled' : 'disabled'}`);
 
     const subPath = configService.get<string>('SUB_PATH');
+    const borrower = parseBorrowerOnboardingConfig(configService.get<string>(BORROWER_ONBOARDING_ENV));
+    const cameraViewerPaths = new Set(
+      [configService.get<string>('TOOLJET_DEALER_CAMERA_VIEWER_URL'), borrower?.returnUrl].map((viewer) =>
+        cameraViewerPath(viewer, host, subPath)
+      )
+    );
 
     // Custom headers middleware
-    app.use((req, res, next) => {
+    app.use((req: Request, res: Response, next: NextFunction) => {
+      // Keep the camera's opener only on its configured viewer and canonical request host.
+      if (req.method === 'GET' && cameraViewerPaths.has(req.path) && req.get('host') === host.host) {
+        res.setHeader('Cross-Origin-Opener-Policy', 'same-origin-allow-popups');
+      }
       res.setHeader('Permissions-Policy', 'geolocation=(self), camera=(self), microphone=(self)');
       res.setHeader('X-Powered-By', 'ToolJet');
 

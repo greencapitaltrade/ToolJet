@@ -1,0 +1,174 @@
+# Dealer applicant admission
+
+`POST /api/dealer-onboarding` is the same-origin route for a new dealer to use
+their v3 link and existing mobile verification. It shares the applicant HTTP,
+Fury and Redis session controls with borrower onboarding. The legacy ToolJet
+dealer app remains private and continues to use its native forms.
+
+The relay stays disabled without the managed server secret
+`TOOLJET_DEALER_ONBOARDING`. It accepts the existing ToolJet browser `origin`,
+authenticated `organizationId`, fixed HTTPS `furyUrl` ending in `/v2/graphql`,
+and pre-authorized `lspSecret`. Keep the secret exclusively server-side. The
+pre-OTP check uses the exact Fury-workload-only Destiny endpoint and a selected
+immutable dealer policy with `dealer_referral_required: true`. A link is never
+an identity grant. After OTP, the server uses the verified Fury session and the
+referral to bind an owned intake to the opaque session. Subsequent requests use
+the bound intake and the same verified Fury session.
+
+| Operation | Input | Result |
+| --- | --- | --- |
+| `entry` | v3 `referralToken` and empty `fields` | `invite` or `phone` |
+| `requestOtp` | `fields.phone` | `otp` |
+| `verifyOtp` | `fields.otp` | `pan` and rotated opaque session cookie |
+| `lookup` | `fields.pan` | new business category or the applicant’s existing draft |
+| `start` | `businessName`, `applicantName`, `applicantRole`, `email`, optional `firmType` and `gstin` | the same scoped draft on retry |
+| `saveEntityDetails` | server-selected `premises` and applicable `cin` or `llpin` | the same draft after an owned, versioned details update |
+| `status` | empty `fields` | confirmed stage or draft status and current policy step |
+| `gstStatus` | empty `fields` | current GST Account Aggregator status |
+| `gstStart` | empty `fields` | status and consent link for the draft’s GST Account Aggregator request |
+| `gstAttach` | one `fields.account` key returned by `gstStatus` | GST records attached to the draft |
+
+The applicant selects Partnership or LLP after a firm PAN. A GSTIN supplied by
+an existing client during draft creation must match the business PAN. The GST
+Account Aggregator action uses the draft's stored PAN, `gst` purpose and
+`GSTR1_3B` records. The browser sees masked registrations. The pinned dealer
+workflow's existing details and agreement validation handle full GSTIN
+separately. Company and LLP registry evidence uses the established review
+process. The browser never chooses the parent, tenant, applicant ID, draft ID,
+or signer on this admission route.
+
+Keep the public route and its ToolJet app disabled until the remaining draft
+actions are verified. The response only offers entity details while the pinned
+details step is pending and the linked applicant owns a writable draft. A second
+server status check guards that action before saving. The relevant owner contracts are below.
+
+`POST /api/dealer-onboarding/document` accepts one `multipart/form-data` file
+and a server-projected `code`. A camera capture includes `location` from the
+existing Fury popup. The relay checks the verified session before reading the
+file, limits attachments to 10 MiB, refreshes the pinned requirement and case
+version, and forwards to the fixed authenticated Fury document route. The UI
+receives new counts and document labels without file references or data. Bank
+statements use PDF. Cheques use JPEG or PNG. Location evidence requires a
+freshly geotagged JPEG. The viewer offers only the live mobile camera for
+this requirement.
+
+| Continuation | Existing contract and required linkage |
+| --- | --- |
+| Bank consent and statements | PDF attachment is available through the document action. AA and account verification need their existing tenant-approved provider lifecycle. |
+| Entity proofs, cheque and live premises photo | Destiny document requirements determine exact codes and count. The scoped Fury rear-camera popup produces photo and fresh coordinates in the staged native app. The public relay uses the existing private registered-document storage through Fury. |
+| Each person’s KYC and match | Scoped participant consent must bind the actor to their own person association and current version before DigiLocker or selfie. The staged native app uses the separate Fury camera popup. |
+| All required signers and review | The pinned dealer policy fixes the signer roster. Only the current person may initiate their own provider action. Do not forward an arbitrary signer from a browser or expose private PDFs. |
+
+The private ToolJet form patch already knows the existing participant, document,
+camera and eSign routes. Do not make that app public as a shortcut. Its browser
+gateway retains bearer state and broad private query envelopes. The public
+continuation requires explicit actions for the confirmed applicant role and
+current step and must be tested before activation.
+
+### Camera opener
+
+`TOOLJET_DEALER_CAMERA_VIEWER_URL` defaults to unset. To enable the camera
+handshake, set it to the complete HTTPS URL of the dealer viewer page on the
+canonical `TOOLJET_HOST` origin. Include the server mount path if configured.
+For example, use `https://tooljet.example.test/applications/dealership/dealer-admission`.
+Use the page URL without a trailing slash, query string or fragment. Invitation
+links can still carry query parameters and fragments.
+
+An exact GET for this viewer receives `same-origin-allow-popups` so the Fury
+camera can communicate with its opener. An absent or invalid setting leaves
+Helmet's default opener policy in effect.
+
+## Separate participant session
+
+`POST /api/dealer-onboarding/participant` uses its own opaque HttpOnly cookie
+and Redis keys. Keep `TOOLJET_DEALER_PARTICIPANT` unset until the participant
+workflow is ready. The managed configuration uses the same four connection
+settings as dealer onboarding plus an exact HTTPS `kycOrigin` and
+`signingOrigin`. Redirects from a different origin are refused.
+
+The route accepts `entry`, `requestOtp` and `verifyOtp` using the same v3
+referral and phone syntax as dealer admission. After independent OTP, `attach` accepts `fields.consentId`.
+Fury and Destiny must match the receipt to the authenticated participant and
+the signed dealer parent before returning status. The server stores the receipt
+for the session. `status`, `startKyc`, `syncKyc`, `sign` and `withdraw` accept
+empty `fields`. Public responses contain only the projected status and allowed
+actions, plus an approved provider redirect when needed.
+
+An owner can use `inviteParticipant` with the intended `mobile`, copy the
+invitation, list `participantRequests`, and `acceptParticipant` with an exact
+pending `consentId` and the listed `version`. The ToolJet server uses its
+verified draft and signed referral for each action. It does not dispatch any
+notification.
+
+The participant link carries an opaque invitation reference alongside the
+signed referral. `entry` accepts it as `fields.invitationId`. The relay does
+not look up the reference before independent OTP. `status` then recovers the
+participant’s own receipt or requests their consent details. `claim` accepts
+only `consent`, `name`, `role`, `din` and `kyc_contact`. This operation uses
+the existing `TOOLJET_PARTNER_OPS_UPSTREAM_ORIGIN` for a fixed private Destiny
+request, forwarding only the server-verified actor, tenant and phone from
+the existing OTP session. Destiny matches the verified phone to the saved
+invitation. The relay stores the receipt in the participant session and
+continues through the same authenticated Fury own-person actions.
+The separate existing-receipt entry remains available for compatibility.
+
+The participant relay offers selfie capture when Destiny confirms that the
+receipt and current Aadhaar evidence are eligible. The front-camera popup
+supplies a JPEG for `POST /api/dealer-onboarding/participant/selfie`. The
+endpoint accepts one JPEG up to 96 KiB with no form fields and uses the
+participant cookie and attached receipt. The image bypasses the native query
+and is never stored in the relay. Destiny rechecks consent, the case version
+and the same Aadhaar evidence after matching.
+
+The staged app remains private. Native viewer and provider verification are
+required before enabling this workflow.
+
+## Dealer owner's own identity
+
+`POST /api/dealer-onboarding/identity` uses the authenticated dealer cookie and
+accepts only `{ action: 'STATUS' | 'START' | 'SYNC' }`. A separate
+`POST /api/dealer-onboarding/identity/selfie` accepts one JPEG of up to 96 KiB.
+These requests bypass RunJS. The relay rechecks the current case and allowed
+action through Fury before reading or sending camera bytes. Keep
+`TOOLJET_DEALER_OWNER_KYC_ORIGIN` unset until the exact managed HTTPS origin
+matches Fury's `FURY_DEALER_OWNER_KYC_ORIGIN` and the downstream provider is
+verified. The browser receives a redirect only for an eligible DigiLocker
+start. The relay neither stores uploads nor exposes provider receipt or
+document references.
+
+## Dealer owner dossier
+
+The dedicated `POST /api/dealer-onboarding/dossier` form route uses the
+same-origin verified dealer session. It accepts `STATUS` or one current form
+action with the displayed draft version. The relay supplies the draft and signed
+referral from the existing session and obtains the current form state from
+Destiny before writing. Results include the current version and available forms.
+Write values go directly from the native form to this route and remain outside
+ToolJet queries, tracing and applicant session storage.
+
+The `FURY_DEALER_OWNER_DOSSIER_ENABLED` and
+`DESTINY_DEALER_OWNER_DOSSIER_ENABLED` flags default off.
+
+## Owner agreement and submission
+
+`agreementStatus` returns the current stage and available actions.
+`prepareAgreement`, `verifyBank`, `freezeAgreement`, `refreshSignatures`,
+`signOwnerAgreement`, and `submitForReview` accept no browser fields. The relay supplies the case,
+signed referral and current version from its authenticated owner session.
+Destiny checks the original owner and pinned dealer policy again for each
+operation. `signOwnerAgreement` requires verified owner KYC and selfie evidence
+for the owner's entry in the frozen roster. It returns only that entry's link
+and requires an exact HTTPS `signingOrigin` in a matching
+`TOOLJET_DEALER_PARTICIPANT` configuration. The other completion operations
+omit signing links. Completion responses omit account details and signed files.
+
+Preparation requires registered evidence and opens any configured intermediate
+review. Bank verification uses the saved execution data, the pinned product,
+and the configured AU remitter. Statement attachments and the verified bank
+snapshot are separate prerequisites. Agreement preparation preserves the snapshot and
+frozen Aadhaar signer roster. Submission requires completed provider signing
+and opens independent review. Existing fee checks remain on review claims
+and decisions.
+
+The dedicated dossier and identity routes collect execution details and the
+owner's own identity evidence.

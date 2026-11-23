@@ -1,6 +1,6 @@
 import { validate as isUuid } from 'uuid';
 
-export type OidcIdentity = { issuer: string; sub: string };
+export type OidcIdentity = { issuer: string; sub: string; clientId: string };
 
 export type ConfiguredOidcSettings = {
   issuer: string;

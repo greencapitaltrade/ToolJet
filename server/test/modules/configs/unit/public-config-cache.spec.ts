@@ -42,4 +42,26 @@ describe('ConfigService.public_config cache', () => {
 
     await expect(service.public_config()).resolves.toMatchObject({ ENABLE_COMMENTS: 'true' });
   });
+
+  it('keeps applicant relay credentials private even if mistakenly allowlisted', async () => {
+    const original = process.env;
+    process.env = {
+      ...original,
+      ALLOWED_CLIENT_CONFIG_VARS:
+        'LANGUAGE, TOOLJET_BORROWER_ONBOARDING, TOOLJET_DEALER_ONBOARDING, TOOLJET_DEALER_PARTICIPANT',
+      TOOLJET_BORROWER_ONBOARDING: '{"lspSecret":"synthetic-private-secret"}',
+      TOOLJET_DEALER_ONBOARDING: '{"lspSecret":"synthetic-other-private-secret"}',
+      TOOLJET_DEALER_PARTICIPANT: '{"lspSecret":"synthetic-participant-secret"}',
+      LANGUAGE: 'en',
+    };
+    try {
+      const config = await makeService(jest.fn().mockResolvedValue({})).public_config();
+      expect(config).toMatchObject({ LANGUAGE: 'en' });
+      expect(config).not.toHaveProperty('TOOLJET_BORROWER_ONBOARDING');
+      expect(config).not.toHaveProperty('TOOLJET_DEALER_ONBOARDING');
+      expect(config).not.toHaveProperty('TOOLJET_DEALER_PARTICIPANT');
+    } finally {
+      process.env = original;
+    }
+  });
 });

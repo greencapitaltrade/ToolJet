@@ -78,6 +78,8 @@ sequenceDiagram
 
 `AuthController` supports global, super-admin, and workspace login. `SessionUtilService` signs the JWT cookie and builds the user/workspace permission payload. Subsequent controllers combine `JwtAuthGuard`, resource validation guards, and an `AbilityGuard`. Google/GitHub OAuth have CE implementations; OIDC/SAML/LDAP services are public stubs with private edition implementations (`server/src/modules/auth/AGENTS.md`).
 
+The configured partner operations relay resolves the verified workspace session subject against Thor. It forwards the resulting business user and organization IDs to the workload-restricted operator route. See [`configured-oidc.md`](../../server/docs/configured-oidc.md).
+
 ### 2. Author, release, and render an app
 
 1. `frontend/src/HomePage/HomePage.jsx::createApp` calls `frontend/src/_services/apps.service.js` and `AppsController.create`.

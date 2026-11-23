@@ -56,6 +56,7 @@ Controller wiring (`src/modules/folders/controller.ts`):
 - `AppModule.configure()` applies `MigrationGateMiddleware` before `OtelMiddleware`, both on `'*'`. Health and probe endpoints must be GETs: reads always pass the gate (`MIGRATION_FLOW.md`, Upgrade gate).
 - Root features check abilities against `InstanceSettings` (`FeatureAbilityFactory` is an `AppModule` provider). Non-public root routes need both.
 - Workspace = `Organization` entity/`organizationId` fields (legacy naming) — user-facing term is Workspace.
+- Configured OIDC exception logs retain only method, URL path, HTTP status and transaction ID as request diagnostics. Keep callback query, header and exception contents out of telemetry.
 
 ## Related modules
 
