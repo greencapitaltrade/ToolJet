@@ -37,15 +37,23 @@ function settings() {
   if (!oidc || process.env.TOOLJET_PARTNER_OPS_ISSUER !== oidc.issuer) return null;
   try {
     const upstream = new URL(process.env.TOOLJET_PARTNER_OPS_UPSTREAM_ORIGIN);
+    const thor = new URL(process.env.TOOLJET_PARTNER_OPS_THOR_ORIGIN);
     // With HTTP, the deployment's workload mTLS policy supplies peer authentication.
     const mesh = upstream.protocol === 'http:' && upstream.hostname.endsWith('.svc.cluster.local');
     if (
       (!mesh && upstream.protocol !== 'https:') ||
+      !['http:', 'https:'].includes(thor.protocol) ||
+      !thor.hostname.endsWith('.svc.cluster.local') ||
       upstream.pathname !== '/' ||
+      thor.pathname !== '/' ||
       upstream.search ||
+      thor.search ||
       upstream.hash ||
+      thor.hash ||
       upstream.username ||
-      upstream.password
+      thor.username ||
+      upstream.password ||
+      thor.password
     ) {
       return null;
     }
@@ -54,6 +62,7 @@ function settings() {
       origin: oidc.origin,
       workspaceId: oidc.workspaceId,
       endpoint: new URL('/v1/channel-partners/operator', upstream).href,
+      thorOrigin: thor.origin,
     };
   } catch {
     return null;
@@ -123,13 +132,23 @@ export class PartnerOpsController {
     if (actor?.issuer !== config.issuer || !positiveId(actor.sub)) return fail(401);
 
     try {
+      const identity = await fetch(new URL(`/v1/users/oidc-subject/${actor.sub}`, config.thorOrigin).href, {
+        method: 'GET',
+        redirect: 'error',
+        headers: { 'x-gct-oidc-issuer': actor.issuer },
+        signal: AbortSignal.timeout(5_000),
+      });
+      if (!identity.ok) return fail(identity.status === 404 ? 401 : 503);
+      const thorUser: { sub?: unknown; organization_id?: unknown } | null = await identity.json();
+      if (thorUser?.sub !== actor.sub || !positiveId(thorUser.organization_id)) return fail(503);
+
       const upstream = await fetch(config.endpoint, {
         method: 'POST',
         redirect: 'error',
         headers: {
           'Content-Type': 'application/json',
-          'x-gct-oidc-issuer': actor.issuer,
-          'x-gct-oidc-subject': actor.sub,
+          'x-gct-user-id': thorUser.sub,
+          'x-gct-org-id': thorUser.organization_id,
         },
         body: JSON.stringify(input),
         signal: AbortSignal.timeout(input.operation === 'feeCheckout' ? 35_000 : 20_000),

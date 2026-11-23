@@ -6,6 +6,7 @@ import type { SessionUtilService } from '@modules/session/util.service';
 const issuer = 'https://issuer.example.test/oidc';
 const workspaceId = 'e38e7590-76c7-46b1-9413-d56ec6ee28af';
 const tooljetOrigin = 'https://workspace.example.test';
+const thorOrigin = 'http://thor.default.svc.cluster.local';
 const upstream = 'http://operations.default.svc.cluster.local';
 const session = { getOidcActor: jest.fn() };
 const controller = new PartnerOpsController(session as unknown as SessionUtilService);
@@ -37,10 +38,16 @@ beforeEach(() => {
     TOOLJET_OIDC_CLIENT_SECRET: 'synthetic-test-only-sign-in-client',
     TOOLJET_OIDC_WORKSPACE_ID: workspaceId,
     TOOLJET_PARTNER_OPS_ISSUER: issuer,
+    TOOLJET_PARTNER_OPS_THOR_ORIGIN: thorOrigin,
     TOOLJET_PARTNER_OPS_UPSTREAM_ORIGIN: upstream,
   });
   session.getOidcActor.mockReset().mockResolvedValue({ issuer, sub: '42' });
-  jest.spyOn(global, 'fetch').mockResolvedValue(globalThis.Response.json({ data: { rows: [] } }));
+  jest.spyOn(global, 'fetch').mockImplementation(async (url) => {
+    if (url === thorOrigin + '/v1/users/oidc-subject/42') {
+      return globalThis.Response.json({ sub: '42', organization_id: '9007199254740993' });
+    }
+    return globalThis.Response.json({ data: { rows: [] } });
+  });
 });
 
 afterEach(() => jest.restoreAllMocks());
@@ -82,14 +89,20 @@ describe('partner operator workspace relay', () => {
     });
     expect(await relay(selector, req)).toEqual({ status: 200, body: { data: { rows: [] } } });
     expect(session.getOidcActor).toHaveBeenCalledWith(req.user);
-    expect(fetch).toHaveBeenCalledTimes(1);
-    expect(fetch).toHaveBeenCalledWith(
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenNthCalledWith(
+      1,
+      thorOrigin + '/v1/users/oidc-subject/42',
+      expect.objectContaining({ method: 'GET', redirect: 'error', headers: { 'x-gct-oidc-issuer': issuer } })
+    );
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
       upstream + '/v1/channel-partners/operator',
       expect.objectContaining({
         method: 'POST',
         redirect: 'error',
         body: JSON.stringify(selector),
-        headers: { 'Content-Type': 'application/json', 'x-gct-oidc-issuer': issuer, 'x-gct-oidc-subject': '42' },
+        headers: { 'Content-Type': 'application/json', 'x-gct-user-id': '42', 'x-gct-org-id': '9007199254740993' },
       })
     );
   });
@@ -132,6 +145,28 @@ describe('partner operator workspace relay', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { sub: '43', organization_id: '7' },
+    { sub: '42', organization_id: 7 },
+    { sub: '42', organization_id: '9223372036854775808' },
+    { sub: '42', organization_id: '07' },
+    null,
+  ])('does not forward when Thor returns an invalid identity', async (actor) => {
+    jest.mocked(fetch).mockResolvedValueOnce(globalThis.Response.json(actor));
+    expect((await relay({ operation: 'session' })).status).toBe(503);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [404, 401],
+    [429, 503],
+    [500, 503],
+  ])('maps Thor status %s without calling the operations service', async (status, expected) => {
+    jest.mocked(fetch).mockResolvedValueOnce(globalThis.Response.json({ private: 'fixture' }, { status }));
+    expect((await relay({ operation: 'session' })).status).toBe(expected);
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
+
   it('stays disabled without approved issuer and a fixed upstream', async () => {
     const guard = new PartnerOpsGuard();
     const passport = jest
@@ -144,19 +179,28 @@ describe('partner operator workspace relay', () => {
     }
     expect(passport).not.toHaveBeenCalled();
     process.env.TOOLJET_PARTNER_OPS_UPSTREAM_ORIGIN = upstream;
+    for (const origin of [undefined, 'https://public.example.test', thorOrigin + '/override']) {
+      if (origin === undefined) delete process.env.TOOLJET_PARTNER_OPS_THOR_ORIGIN;
+      else process.env.TOOLJET_PARTNER_OPS_THOR_ORIGIN = origin;
+      expect(await guard.canActivate(ctx(request()))).toBe(false);
+    }
+    process.env.TOOLJET_PARTNER_OPS_THOR_ORIGIN = thorOrigin;
     process.env.TOOLJET_PARTNER_OPS_ISSUER = 'https://foreign.example';
     expect((await relay({ operation: 'session' })).status).toBe(404);
     expect(fetch).not.toHaveBeenCalled();
   });
 
   it('preserves scope denial and suppresses raw upstream response or transport errors', async () => {
-    jest.mocked(fetch).mockResolvedValueOnce(globalThis.Response.json({ stack: 'private' }, { status: 404 }));
+    jest
+      .mocked(fetch)
+      .mockResolvedValueOnce(globalThis.Response.json({ sub: '42', organization_id: '7' }))
+      .mockResolvedValueOnce(globalThis.Response.json({ stack: 'private' }, { status: 404 }));
     expect(await relay({ operation: 'borrowerDpd', partnerId: '11' })).toEqual({
       status: 404,
       body: { error: 'This record is unavailable.' },
     });
     jest.mocked(fetch).mockRejectedValueOnce(Error('private'));
     expect((await relay({ operation: 'feeCheckout', dealerId: '11' })).status).toBe(503);
-    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(fetch).toHaveBeenCalledTimes(3);
   });
 });
