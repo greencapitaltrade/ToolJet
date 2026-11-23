@@ -226,7 +226,7 @@ function operation(value: unknown): Operation {
         typeof fields[key] === 'string' &&
         fields[key].length <= fieldLimits[key]
     ) &&
-    ['businessName', 'applicantName', 'applicantRole', 'email', 'gstin'].every(
+    ['businessName', 'applicantName', 'applicantRole', 'email'].every(
       (key) => typeof fields[key] === 'string' && fields[key].trim()
     )
   )
@@ -680,14 +680,15 @@ export class DealerOnboarding {
         );
       }
       if (state.draftId) return this.status(scope, state, key);
-      const gstin = command.fields.gstin.trim().toUpperCase();
-      if (!gstPattern.test(gstin) || gstin.slice(2, 12) !== state.pan) return rejectApplicant(400);
+      const gstin = command.fields.gstin?.trim().toUpperCase();
+      if (gstin !== undefined && (!gstPattern.test(gstin) || gstin.slice(2, 12) !== state.pan))
+        return rejectApplicant(400);
       const result = await this.fury.request(
         scope,
         docs.start,
         {
           referral_token: state.referral,
-          input: { ...command.fields, gstin, pan: state.pan },
+          input: { ...command.fields, ...(gstin !== undefined && { gstin }), pan: state.pan },
         },
         state
       );

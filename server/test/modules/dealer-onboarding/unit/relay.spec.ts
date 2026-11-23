@@ -19,7 +19,6 @@ const draft = {
   canWrite: true,
 };
 const details = {
-  gstin: '07AAAFA1234A1Z1',
   firmType: 'llp',
   businessName: 'Synthetic Dealer',
   applicantName: 'Synthetic Partner',
@@ -268,6 +267,7 @@ it('verifies the invite and OTP, saves PAN server-side, creates under the invite
     state: 'invite',
   });
   await expect(call('lookup', { pan: ' aaafa1234a ' })).resolves.toEqual({ state: 'details', category: 'firm' });
+  await expect(call('start', { ...details, gstin: '07AAAPA1234A1Z1' })).rejects.toMatchObject({ status: 400 });
   await expect(call('start', details)).resolves.toEqual({
     state: 'draft',
     draft,
