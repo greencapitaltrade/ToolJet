@@ -21,14 +21,21 @@ the bound intake and the same verified Fury session.
 | `requestOtp` | `fields.phone` | `otp` |
 | `verifyOtp` | `fields.otp` | `pan` and rotated opaque session cookie |
 | `lookup` | `fields.pan` | new business category or the applicant’s existing draft |
-| `start` | `gstin`, `businessName`, `applicantName`, `applicantRole`, `email`, optional `firmType` | the same scoped draft on retry |
+| `start` | `businessName`, `applicantName`, `applicantRole`, `email`, optional `firmType` and `gstin` | the same scoped draft on retry |
 | `saveEntityDetails` | server-selected `premises` and applicable `cin` or `llpin` | the same draft after an owned, versioned details update |
 | `status` | empty `fields` | confirmed stage or draft status and current policy step |
+| `gstStatus` | empty `fields` | current GST Account Aggregator status |
+| `gstStart` | empty `fields` | status and consent link for the draft’s GST Account Aggregator request |
+| `gstAttach` | one `fields.account` key returned by `gstStatus` | GST records attached to the draft |
 
-The applicant selects Partnership or LLP after a firm PAN. The registry
-portion of GSTIN must match the business PAN. Company and LLP registry evidence
-still uses the established review process. The browser never chooses the parent,
-tenant, applicant ID, draft ID, or signer on this admission route.
+The applicant selects Partnership or LLP after a firm PAN. A GSTIN supplied by
+an existing client during draft creation must match the business PAN. The GST
+Account Aggregator action uses the draft's stored PAN, `gst` purpose and
+`GSTR1_3B` records. The browser sees masked registrations. The pinned dealer
+workflow's existing details and agreement validation handle full GSTIN
+separately. Company and LLP registry evidence uses the established review
+process. The browser never chooses the parent, tenant, applicant ID, draft ID,
+or signer on this admission route.
 
 Keep the public route and its ToolJet app disabled until the remaining draft
 actions are verified. The response only offers entity details while the pinned
