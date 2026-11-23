@@ -7,14 +7,14 @@ import { JwtAuthGuard } from '@modules/session/guards/jwt-auth.guard';
 import { SessionUtilService } from '@modules/session/util.service';
 import { FeatureAbilityGuard } from '../ability/guard';
 import { FEATURE_KEY } from '../constants';
-import { getConfiguredOidcSettings } from './configured-oidc.config';
+import { getConfiguredOidcSettings, isHttpsUrl } from './configured-oidc.config';
 
 const readFields = ['partnerId', 'after'];
 const operations = new Map([
   ['session', []],
   ['partners', readFields],
   ['borrowerApplications', readFields],
-  ['borrowerDpd', readFields],
+  ['borrowerDpd', [...readFields, 'applicationId']],
   ['dealerLink', ['partnerId']],
   ['borrowerLink', ['partnerId']],
   ['feeStatus', ['dealerId']],
@@ -32,38 +32,29 @@ const errors = new Map([
   [503, 'The operations service is unavailable. Try again later.'],
 ]);
 
+function privateOrigin(value: string): string | null {
+  const url = new URL(value);
+  return ['http:', 'https:'].includes(url.protocol) &&
+    url.hostname.endsWith('.svc.cluster.local') &&
+    url.href === `${url.origin}/`
+    ? url.origin
+    : null;
+}
+
 function settings() {
   const oidc = getConfiguredOidcSettings();
-  if (!oidc || process.env.TOOLJET_PARTNER_OPS_ISSUER !== oidc.issuer) return null;
+  if (!oidc) return null;
   try {
-    const upstream = new URL(process.env.TOOLJET_PARTNER_OPS_UPSTREAM_ORIGIN);
-    const thor = new URL(process.env.TOOLJET_PARTNER_OPS_THOR_ORIGIN);
-    // With HTTP, the deployment's workload mTLS policy supplies peer authentication.
-    const mesh = upstream.protocol === 'http:' && upstream.hostname.endsWith('.svc.cluster.local');
-    if (
-      (!mesh && upstream.protocol !== 'https:') ||
-      !['http:', 'https:'].includes(thor.protocol) ||
-      !thor.hostname.endsWith('.svc.cluster.local') ||
-      upstream.pathname !== '/' ||
-      thor.pathname !== '/' ||
-      upstream.search ||
-      thor.search ||
-      upstream.hash ||
-      thor.hash ||
-      upstream.username ||
-      thor.username ||
-      upstream.password ||
-      thor.password
-    ) {
-      return null;
-    }
+    const destinyOrigin = privateOrigin(process.env.TOOLJET_PARTNER_OPS_UPSTREAM_ORIGIN);
+    const thorOrigin = privateOrigin(process.env.TOOLJET_PARTNER_OPS_THOR_ORIGIN);
+    if (!destinyOrigin || !thorOrigin) return null;
     return {
       issuer: oidc.issuer,
       clientId: oidc.clientId,
       origin: oidc.origin,
       workspaceId: oidc.workspaceId,
-      endpoint: new URL('/v1/channel-partners/operator', upstream).href,
-      thorOrigin: thor.origin,
+      destinyOrigin,
+      thorOrigin,
     };
   } catch {
     return null;
@@ -76,6 +67,10 @@ function positiveId(value: unknown): value is string {
   );
 }
 
+function isDraftId(value: unknown): value is string {
+  return typeof value === 'string' && /^[\da-f]{8}-(?:[\da-f]{4}-){3}[\da-f]{12}$/i.test(value);
+}
+
 function validatedOperation(body: unknown): Record<string, string> | null {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return null;
   const { operation, ...fields } = body as Record<string, unknown>;
@@ -85,7 +80,32 @@ function validatedOperation(body: unknown): Record<string, string> | null {
   const values = Object.entries(fields);
   if (values.some(([key, value]) => !allowed.includes(key) || !positiveId(value))) return null;
   if (allowed.includes('dealerId') && !positiveId(fields.dealerId)) return null;
+  if (allowed.includes('partnerId') && operation !== 'partners' && !positiveId(fields.partnerId)) return null;
   return Object.fromEntries([['operation', operation], ...values]) as Record<string, string>;
+}
+
+type CaseTarget = { id: string; name: string };
+type PartnerSession = {
+  display_name: string;
+  directory_viewer?: boolean;
+  permissions: { directory?: boolean; cases?: boolean; onboard?: boolean };
+  channels: CaseTarget[];
+  case_targets?: CaseTarget[];
+  referral_targets?: { dealer?: CaseTarget[]; borrower?: CaseTarget[] };
+};
+
+type PartnerRow = CaseTarget & {
+  type: string;
+  status: string;
+  parent_id: string | null;
+  onboarding_status?: string;
+  draft_id?: string;
+};
+
+class UpstreamError extends Error {
+  constructor(readonly status: number) {
+    super();
+  }
 }
 
 type ViewerRequest = Request & { user: Parameters<SessionUtilService['getOidcActor']>[0] };
@@ -144,24 +164,170 @@ export class PartnerOpsController {
       if (!identity.ok) return fail(identity.status === 404 ? 401 : 503);
       const thorUser: { sub?: unknown; organization_id?: unknown } | null = await identity.json();
       if (thorUser?.sub !== actor.sub || !positiveId(thorUser.organization_id)) return fail(503);
+      const organizationId = thorUser.organization_id;
 
-      const upstream = await fetch(config.endpoint, {
-        method: 'POST',
-        redirect: 'error',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-gct-user-id': actor.sub,
-          'x-gct-org-id': thorUser.organization_id,
-        },
-        body: JSON.stringify(input),
-        signal: AbortSignal.timeout(input.operation === 'feeCheckout' ? 35_000 : 20_000),
-      });
-      if (!upstream.ok) return fail(errors.has(upstream.status) ? upstream.status : 503);
-      const result: { data?: unknown } = await upstream.json();
-      if (!result?.data || typeof result.data !== 'object' || Array.isArray(result.data)) return fail(503);
-      return response.status(200).json({ data: result.data });
-    } catch {
-      return fail(503);
+      const forward = async <T>(path: string, payload?: object): Promise<T> => {
+        const upstream = await fetch(new URL(path, config.destinyOrigin).href, {
+          method: payload ? 'POST' : 'GET',
+          redirect: 'error',
+          headers: {
+            'x-gct-user-id': actor.sub,
+            'x-gct-org-id': organizationId,
+            ...(payload && { 'Content-Type': 'application/json' }),
+          },
+          body: payload && JSON.stringify(payload),
+          signal: AbortSignal.timeout(input.operation === 'feeCheckout' ? 35_000 : 20_000),
+        });
+        if (!upstream.ok) throw new UpstreamError(errors.has(upstream.status) ? upstream.status : 503);
+        const result = await upstream.json();
+        if (!result || typeof result !== 'object' || Array.isArray(result)) throw new UpstreamError(503);
+        return result;
+      };
+
+      const { operation, dealerId, partnerId, after, applicationId } = input;
+      const query = new URLSearchParams();
+      if (operation === 'partners' && partnerId) query.set('parent_id', partnerId);
+      if (after) query.set('after', after);
+      if (applicationId) query.set('application_id', applicationId);
+      const page = query.size ? `?${query}` : '';
+      let data: object;
+
+      switch (operation) {
+        case 'session': {
+          const session = await forward<PartnerSession>('/v1/channel-partners/session');
+          const targets = (choices: CaseTarget[] = []) => choices.map(({ id, name }) => ({ id, name }));
+          const dealerLink = targets(session.referral_targets?.dealer);
+          const borrowerLink = targets(session.referral_targets?.borrower);
+          const caseTargets = targets(session.case_targets ?? session.channels);
+          const partnerDirectory = session.permissions.directory === true && !session.directory_viewer;
+          data = {
+            name: session.display_name,
+            partnerDirectory,
+            capabilities: [
+              ...(partnerDirectory || caseTargets.length || dealerLink.length || borrowerLink.length
+                ? ['partners']
+                : []),
+              ...(session.permissions.cases && caseTargets.length ? ['borrowerApplications', 'borrowerDpd'] : []),
+              ...(partnerDirectory && session.permissions.onboard ? ['feeStatus'] : []),
+              ...(dealerLink.length ? ['dealerLink'] : []),
+              ...(borrowerLink.length ? ['borrowerLink'] : []),
+            ],
+            caseTargets,
+            linkTargets: { dealerLink, borrowerLink },
+          };
+          break;
+        }
+        case 'partners': {
+          const result = await forward<{ partners: PartnerRow[]; next_after?: string }>(`/v1/partners${page}`);
+          data = {
+            rows: result.partners.map(({ id, name, type, status, parent_id, onboarding_status, draft_id }) => ({
+              id,
+              name,
+              type,
+              status,
+              parentId: parent_id,
+              onboardingStatus: onboarding_status,
+              canPayFee: type === 'dealer' && status === 'pending' && isDraftId(draft_id),
+            })),
+            ...(result.next_after && { nextAfter: result.next_after }),
+          };
+          break;
+        }
+        case 'borrowerApplications': {
+          const result = await forward<{
+            applications: { id: string | number; status: string; partner_id: string }[];
+            next_after?: string | number;
+          }>(`/v1/partners/${partnerId}/applications${page}`);
+          data = {
+            rows: result.applications.map(({ id, status, partner_id }) => ({
+              id: String(id),
+              status,
+              partnerId: partner_id,
+            })),
+            ...(result.next_after && { nextAfter: String(result.next_after) }),
+          };
+          break;
+        }
+        case 'borrowerDpd': {
+          const result = await forward<{
+            loans: { id: string; application_id: string; days_past_due: number | null; as_of: string }[];
+            next_after?: string | number;
+          }>(`/v1/partners/${partnerId}/dpd${page}`);
+          data = {
+            rows: result.loans.map(({ id, application_id, days_past_due, as_of }) => ({
+              id,
+              applicationId: application_id,
+              daysPastDue: days_past_due,
+              asOf: as_of,
+            })),
+            ...(result.next_after && { nextAfter: String(result.next_after) }),
+          };
+          break;
+        }
+        case 'dealerLink':
+        case 'borrowerLink': {
+          const { url } = await forward<{ url: string }>('/v1/channel-partners/referrals', {
+            purpose: operation === 'dealerLink' ? 'dealer' : 'borrower',
+            partner_id: partnerId,
+          });
+          const invite = new URL(url);
+          const [token, ...extra] = new URLSearchParams(invite.hash.slice(1)).getAll('onboarding');
+          if (
+            !isHttpsUrl(invite.origin) ||
+            invite.username ||
+            invite.password ||
+            invite.searchParams.has('onboarding') ||
+            extra.length ||
+            !/^v3\.[A-Za-z0-9_-]{39,1021}$/.test(token || '')
+          ) {
+            return fail(503);
+          }
+          data = { url: invite.href };
+          break;
+        }
+        case 'feeStatus':
+        case 'feeCheckout': {
+          const dealer = await forward<PartnerRow>(`/v1/partners/${dealerId}`);
+          if (
+            dealer.id !== dealerId ||
+            dealer.type !== 'dealer' ||
+            dealer.status !== 'pending' ||
+            !isDraftId(dealer.draft_id)
+          ) {
+            return fail(404);
+          }
+          const action = operation === 'feeCheckout' ? 'checkout' : 'refresh';
+          const fee = await forward<{
+            status: string;
+            total_paise: number | string | null;
+            currency: string | null;
+            invoice_number?: string;
+            payment_url?: string;
+          }>(`/v1/channel-partners/intakes/${dealer.draft_id}/fee/${action}`, {});
+          const amount = fee.total_paise;
+          if (
+            amount != null &&
+            (typeof amount === 'number' ? !Number.isSafeInteger(amount) || amount < 0 : !/^\d+$/.test(amount))
+          ) {
+            return fail(503);
+          }
+          data = {
+            status: fee.status,
+            amountPaise: amount == null ? null : String(amount),
+            currency: fee.currency,
+            ...(fee.invoice_number && { invoiceReference: fee.invoice_number }),
+            ...(action === 'checkout' &&
+              fee.status === 'unpaid' &&
+              isHttpsUrl(fee.payment_url) && { checkoutUrl: fee.payment_url }),
+          };
+          break;
+        }
+        default:
+          return fail(400);
+      }
+      return response.status(200).json({ data });
+    } catch (error) {
+      return fail(error instanceof UpstreamError ? error.status : 503);
     }
   }
 }

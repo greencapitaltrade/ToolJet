@@ -9,6 +9,7 @@ const workspaceId = 'e38e7590-76c7-46b1-9413-d56ec6ee28af';
 const tooljetOrigin = 'https://workspace.example.test';
 const thorOrigin = 'http://thor.default.svc.cluster.local';
 const upstream = 'http://operations.default.svc.cluster.local';
+const draftId = '2dd5b04c-f85f-4d9f-afe5-06345d14a3c7';
 const session = { getOidcActor: jest.fn() };
 const controller = new PartnerOpsController(session as unknown as SessionUtilService);
 
@@ -47,7 +48,7 @@ beforeEach(() => {
     if (url === thorOrigin + '/v1/users/oidc-subject/42') {
       return globalThis.Response.json({ sub: '42', organization_id: '9007199254740993' });
     }
-    return globalThis.Response.json({ data: { rows: [] } });
+    return globalThis.Response.json({ loans: [], next_after: null });
   });
 });
 
@@ -103,12 +104,11 @@ describe('partner operator workspace relay', () => {
     );
     expect(fetch).toHaveBeenNthCalledWith(
       2,
-      upstream + '/v1/channel-partners/operator',
+      upstream + '/v1/partners/11/dpd?after=999',
       expect.objectContaining({
-        method: 'POST',
+        method: 'GET',
         redirect: 'error',
-        body: JSON.stringify(selector),
-        headers: { 'Content-Type': 'application/json', 'x-gct-user-id': '42', 'x-gct-org-id': '9007199254740993' },
+        headers: { 'x-gct-user-id': '42', 'x-gct-org-id': '9007199254740993' },
       })
     );
   });
@@ -118,8 +118,13 @@ describe('partner operator workspace relay', () => {
     { operation: 'partners', partnerId: '1/path' },
     { operation: 'borrowerApplications', partnerId: '9223372036854775808' },
     { operation: 'dealerLink', organizationId: '7' },
+    { operation: 'dealerLink' },
     { operation: 'dealerLink', partnerId: '11', after: '1' },
     { operation: 'borrowerLink', partnerId: '9223372036854775808' },
+    { operation: 'borrowerApplications' },
+    { operation: 'borrowerDpd' },
+    { operation: 'borrowerDpd', partnerId: '11', applicationId: '11/path' },
+    { operation: 'borrowerApplications', partnerId: '11', applicationId: '24' },
     { operation: 'feeStatus' },
     { operation: 'session', route: '/private' },
     { operation: 'authorize' },
@@ -129,13 +134,222 @@ describe('partner operator workspace relay', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it.each(['dealerLink', 'borrowerLink'])('forwards a validated selector for %s to Destiny', async (operation) => {
-    const body = { operation, partnerId: '11' };
-    expect((await relay(body)).status).toBe(200);
-    expect(fetch).toHaveBeenCalledWith(
-      upstream + '/v1/channel-partners/operator',
-      expect.objectContaining({ body: JSON.stringify(body) })
+  it.each([
+    ['dealerLink', 'dealer'],
+    ['borrowerLink', 'borrower'],
+  ])('requests a scoped Destiny referral for %s', async (operation, purpose) => {
+    const url = `https://invite.example.test/#onboarding=v3.${'a'.repeat(39)}`;
+    jest.mocked(fetch).mockResolvedValueOnce(globalThis.Response.json({ sub: '42', organization_id: '7' }));
+    jest.mocked(fetch).mockResolvedValueOnce(globalThis.Response.json({ url }));
+    expect(await relay({ operation, partnerId: '11' })).toEqual({ status: 200, body: { data: { url } } });
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      upstream + '/v1/channel-partners/referrals',
+      expect.objectContaining({ method: 'POST', body: JSON.stringify({ purpose, partner_id: '11' }) })
     );
+  });
+
+  it.each([
+    'https://invite.example.test/',
+    'https://invite.example.test/#onboarding=legacy',
+    `https://invite.example.test/?onboarding=v3.${'a'.repeat(39)}`,
+    `http://invite.example.test/#onboarding=v3.${'a'.repeat(39)}`,
+  ])('rejects a URL without an HTTPS v3 referral fragment', async (url) => {
+    jest.mocked(fetch).mockResolvedValueOnce(globalThis.Response.json({ sub: '42', organization_id: '7' }));
+    jest.mocked(fetch).mockResolvedValueOnce(globalThis.Response.json({ url }));
+    expect((await relay({ operation: 'dealerLink', partnerId: '11' })).status).toBe(503);
+  });
+
+  it('projects only the app session and eligible branches', async () => {
+    delete process.env.TOOLJET_PARTNER_OPS_ISSUER;
+    jest.mocked(fetch).mockResolvedValueOnce(globalThis.Response.json({ sub: '42', organization_id: '7' }));
+    jest.mocked(fetch).mockResolvedValueOnce(
+      globalThis.Response.json({
+        display_name: 'Klassic fixture',
+        organization_id: '7',
+        channels: [{ id: '11', name: 'Klassic fixture' }],
+        permissions: { directory: true, cases: true, onboard: true },
+        referral_targets: { dealer: [{ id: '11', name: 'Klassic fixture' }], borrower: [] },
+      })
+    );
+    expect(await relay({ operation: 'session' })).toEqual({
+      status: 200,
+      body: {
+        data: {
+          name: 'Klassic fixture',
+          partnerDirectory: true,
+          capabilities: ['partners', 'borrowerApplications', 'borrowerDpd', 'feeStatus', 'dealerLink'],
+          caseTargets: [{ id: '11', name: 'Klassic fixture' }],
+          linkTargets: { dealerLink: [{ id: '11', name: 'Klassic fixture' }], borrowerLink: [] },
+        },
+      },
+    });
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      upstream + '/v1/channel-partners/session',
+      expect.objectContaining({ method: 'GET' })
+    );
+  });
+
+  it('offers case access without requiring an approved self-service dealer to have a staff membership', async () => {
+    jest.mocked(fetch).mockResolvedValueOnce(globalThis.Response.json({ sub: '42', organization_id: '7' }));
+    jest.mocked(fetch).mockResolvedValueOnce(
+      globalThis.Response.json({
+        display_name: 'Dealer fixture',
+        channels: [],
+        case_targets: [{ id: '17', name: 'Dealer fixture' }],
+        permissions: { directory: false, cases: true, onboard: true },
+      })
+    );
+    const result = await relay({ operation: 'session' });
+    expect(result.body.data).toMatchObject({
+      partnerDirectory: false,
+      capabilities: ['partners', 'borrowerApplications', 'borrowerDpd'],
+      caseTargets: [{ id: '17', name: 'Dealer fixture' }],
+    });
+  });
+
+  it('uses the existing partner tree and preserves branch pagination without returning draft or contact data', async () => {
+    jest.mocked(fetch).mockResolvedValueOnce(globalThis.Response.json({ sub: '42', organization_id: '7' }));
+    jest.mocked(fetch).mockResolvedValueOnce(
+      globalThis.Response.json({
+        partners: [
+          {
+            id: '17',
+            name: 'Dealer fixture',
+            type: 'dealer',
+            status: 'pending',
+            parent_id: '11',
+            onboarding_status: 'in_progress',
+            draft_id: draftId,
+            partner_code: 'private',
+          },
+        ],
+        next_after: '17',
+      })
+    );
+    expect(await relay({ operation: 'partners', partnerId: '11', after: '16' })).toEqual({
+      status: 200,
+      body: {
+        data: {
+          rows: [
+            {
+              id: '17',
+              name: 'Dealer fixture',
+              type: 'dealer',
+              status: 'pending',
+              parentId: '11',
+              onboardingStatus: 'in_progress',
+              canPayFee: true,
+            },
+          ],
+          nextAfter: '17',
+        },
+      },
+    });
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      upstream + '/v1/partners?parent_id=11&after=16',
+      expect.objectContaining({ method: 'GET' })
+    );
+  });
+
+  it('lists scoped borrower applications without forwarding unneeded fields', async () => {
+    jest.mocked(fetch).mockResolvedValueOnce(globalThis.Response.json({ sub: '42', organization_id: '7' }));
+    jest.mocked(fetch).mockResolvedValueOnce(
+      globalThis.Response.json({
+        applications: [{ id: 24, status: 'pending', organization_id: '7', partner_id: '17' }],
+        next_after: 24,
+      })
+    );
+    expect(await relay({ operation: 'borrowerApplications', partnerId: '11' })).toEqual({
+      status: 200,
+      body: {
+        data: {
+          rows: [{ id: '24', status: 'pending', partnerId: '17' }],
+          nextAfter: '24',
+        },
+      },
+    });
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      upstream + '/v1/partners/11/applications',
+      expect.objectContaining({ method: 'GET' })
+    );
+  });
+
+  it('uses an optional exact case filter with the authorized partner DPD route', async () => {
+    jest.mocked(fetch).mockResolvedValueOnce(globalThis.Response.json({ sub: '42', organization_id: '7' }));
+    jest.mocked(fetch).mockResolvedValueOnce(
+      globalThis.Response.json({
+        loans: [{ id: draftId, application_id: '24', days_past_due: 0, as_of: '2026-11-23' }],
+        next_after: null,
+      })
+    );
+    expect(await relay({ operation: 'borrowerDpd', partnerId: '11', applicationId: '24' })).toEqual({
+      status: 200,
+      body: {
+        data: {
+          rows: [{ id: draftId, applicationId: '24', daysPastDue: 0, asOf: '2026-11-23' }],
+        },
+      },
+    });
+    expect(fetch).toHaveBeenNthCalledWith(
+      2,
+      upstream + '/v1/partners/11/dpd?application_id=24',
+      expect.objectContaining({ method: 'GET' })
+    );
+  });
+
+  it.each([
+    ['feeStatus', 'refresh'],
+    ['feeCheckout', 'checkout'],
+  ])('resolves the authorized dealer draft for %s before calling the existing fee route', async (operation, action) => {
+    jest.mocked(fetch).mockResolvedValueOnce(globalThis.Response.json({ sub: '42', organization_id: '7' }));
+    jest
+      .mocked(fetch)
+      .mockResolvedValueOnce(
+        globalThis.Response.json({ id: '11', type: 'dealer', status: 'pending', draft_id: draftId })
+      );
+    jest.mocked(fetch).mockResolvedValueOnce(
+      globalThis.Response.json({
+        status: 'unpaid',
+        total_paise: 350,
+        currency: 'INR',
+        invoice_number: 'FIXTURE',
+        payment_url: 'https://pay.example.test/',
+      })
+    );
+    expect(await relay({ operation, dealerId: '11' })).toEqual({
+      status: 200,
+      body: {
+        data: {
+          status: 'unpaid',
+          amountPaise: '350',
+          currency: 'INR',
+          invoiceReference: 'FIXTURE',
+          ...(action === 'checkout' && { checkoutUrl: 'https://pay.example.test/' }),
+        },
+      },
+    });
+    expect(fetch).toHaveBeenNthCalledWith(2, upstream + '/v1/partners/11', expect.objectContaining({ method: 'GET' }));
+    expect(fetch).toHaveBeenNthCalledWith(
+      3,
+      upstream + `/v1/channel-partners/intakes/${draftId}/fee/${action}`,
+      expect.objectContaining({ method: 'POST', body: '{}' })
+    );
+  });
+
+  it.each([
+    { id: '12', type: 'dealer', status: 'pending', draft_id: draftId },
+    { id: '11', type: 'channel_partner', status: 'pending', draft_id: draftId },
+    { id: '11', type: 'dealer', status: 'active', draft_id: draftId },
+    { id: '11', type: 'dealer', status: 'pending', draft_id: '../different' },
+  ])('does not run checkout outside the resolved pending dealer draft', async (partner) => {
+    jest.mocked(fetch).mockResolvedValueOnce(globalThis.Response.json({ sub: '42', organization_id: '7' }));
+    jest.mocked(fetch).mockResolvedValueOnce(globalThis.Response.json(partner));
+    expect((await relay({ operation: 'feeCheckout', dealerId: '11' })).status).toBe(404);
+    expect(fetch).toHaveBeenCalledTimes(2);
   });
 
   it('rejects missing, invalid and foreign OIDC sessions', async () => {
@@ -174,12 +388,12 @@ describe('partner operator workspace relay', () => {
     expect(fetch).toHaveBeenCalledTimes(1);
   });
 
-  it('stays disabled without approved issuer and a fixed upstream', async () => {
+  it('stays disabled without configured SSO and private upstreams', async () => {
     const guard = new PartnerOpsGuard();
     const passport = jest
       .spyOn(Object.getPrototypeOf(PartnerOpsGuard.prototype), 'canActivate')
       .mockResolvedValue(true);
-    for (const origin of [undefined, 'http://public.example.test', upstream + '/redirect', upstream + '/?target=x']) {
+    for (const origin of [undefined, 'https://public.example.test', upstream + '/redirect', upstream + '/?target=x']) {
       if (origin === undefined) delete process.env.TOOLJET_PARTNER_OPS_UPSTREAM_ORIGIN;
       else process.env.TOOLJET_PARTNER_OPS_UPSTREAM_ORIGIN = origin;
       await expect(guard.canActivate(ctx(request()))).resolves.toBe(false);
@@ -192,7 +406,7 @@ describe('partner operator workspace relay', () => {
       expect(await guard.canActivate(ctx(request()))).toBe(false);
     }
     process.env.TOOLJET_PARTNER_OPS_THOR_ORIGIN = thorOrigin;
-    process.env.TOOLJET_PARTNER_OPS_ISSUER = 'https://foreign.example';
+    delete process.env.TOOLJET_OIDC_ISSUER;
     expect((await relay({ operation: 'session' })).status).toBe(404);
     expect(fetch).not.toHaveBeenCalled();
   });
