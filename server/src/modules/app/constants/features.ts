@@ -7,6 +7,10 @@ export const FEATURES: FeaturesConfig = {
     [FEATURE_KEY.HEALTH]: {
       isPublic: true,
     },
+    [FEATURE_KEY.BORROWER_ONBOARDING]: {
+      isPublic: true,
+      skipAuditLogs: true,
+    },
     [FEATURE_KEY.ROOT]: {
       isPublic: true,
     },
