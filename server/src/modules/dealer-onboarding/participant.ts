@@ -2,17 +2,18 @@ import {
   ApplicantFury,
   ApplicantScope,
   applicantScope,
+  exactHttpsOrigin,
   normalizeApplicantPhone,
   rejectApplicant,
 } from '../applicant-session/fury';
 import { ApplicantRedis, ApplicantSessions, newApplicantHandle } from '../applicant-session/store';
+import { dealerSelfieData } from './selfie';
 
 export const DEALER_PARTICIPANT_ENV = 'TOOLJET_DEALER_PARTICIPANT';
 const referralPattern = /^v2[.][A-Za-z0-9_-]{39,1021}$/;
 const receiptPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const guestTtl = 600;
 const statuses = ['pending', 'accepted', 'expired', 'withdrawn'];
-export const maxParticipantSelfieBytes = 96 * 1024;
 const actions = { startKyc: 'START_KYC', syncKyc: 'SYNC_KYC', sign: 'SIGN', withdraw: 'WITHDRAW' } as const;
 type Action = keyof typeof actions;
 type Scope = ApplicantScope & { kycOrigin: string; signingOrigin: string };
@@ -64,14 +65,6 @@ const ownSelfie = {
 const isObject = (value: unknown): value is Input =>
   Boolean(value && typeof value === 'object' && !Array.isArray(value));
 const validStatus = (value: unknown): value is string => typeof value === 'string' && /^[a-z_]{1,32}$/.test(value);
-
-function exactHttpsOrigin(value: unknown): value is string {
-  try {
-    return typeof value === 'string' && value.startsWith('https://') && new URL(value).origin === value;
-  } catch {
-    return false;
-  }
-}
 
 export function parseDealerParticipantConfig(value: string | undefined): Scope | null {
   try {
@@ -248,24 +241,14 @@ export class DealerParticipant {
       await this.sessions.rate(scope, 'selfie', state.phone, 5, 60);
       const current = await this.attach(scope, state, state.receipt);
       if (!current?.actions.includes('selfie')) return rejectApplicant(409);
-      const file = await read();
-      if (file.length > maxParticipantSelfieBytes) return rejectApplicant(413);
-      if (
-        file.length < 5 ||
-        file[0] !== 0xff ||
-        file[1] !== 0xd8 ||
-        file[2] !== 0xff ||
-        file[file.length - 2] !== 0xff ||
-        file[file.length - 1] !== 0xd9
-      )
-        return rejectApplicant(422);
+      const selfie = dealerSelfieData(await read());
       const result = await this.fury.request(
         scope,
         ownSelfie,
         {
           referralToken: state.referral,
           consentId: state.receipt,
-          selfie: `data:image/jpeg;base64,${file.toString('base64')}`,
+          selfie,
         },
         state
       );

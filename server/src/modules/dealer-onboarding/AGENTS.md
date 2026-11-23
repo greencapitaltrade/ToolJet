@@ -21,3 +21,8 @@ the shared short-lived applicant store.
   the verified owner session. The participant route stores only the opaque
   invitation reference before OTP, then obtains the current receipt downstream.
   Keep copied links and the participant role out of query logs and storage.
+- Dealer owner identity uses the existing dealer session and separate
+  same-origin identity routes. The relay obtains the current owner status from
+  Fury before an action or binary upload. No owner, signer, version or provider
+  URL comes from the browser. The owner and participant routes share the
+  bounded JPEG parser.

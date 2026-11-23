@@ -2,7 +2,7 @@ import type { RequestHandler, Response } from 'express';
 import * as multer from 'multer';
 import { ApplicantRequestError, rejectApplicant } from '../applicant-session/fury';
 import type { ApplicantHttpRequest } from '../applicant-session/http';
-import { maxParticipantSelfieBytes } from './participant';
+import { maxDealerSelfieBytes } from './selfie';
 import { maxDealerDocumentBytes } from './relay';
 
 const upload = multer({
@@ -11,7 +11,7 @@ const upload = multer({
 }).single('file');
 const selfieUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: maxParticipantSelfieBytes, files: 1, fields: 0, parts: 2 },
+  limits: { fileSize: maxDealerSelfieBytes, files: 1, fields: 0, parts: 2 },
 }).single('file');
 
 async function parseUpload(req: ApplicantHttpRequest, res: Response, parser: RequestHandler, maxBytes: number) {
@@ -40,8 +40,8 @@ export async function parseDealerUpload(req: ApplicantHttpRequest, res: Response
   }
 }
 
-export async function parseParticipantSelfie(req: ApplicantHttpRequest, res: Response) {
-  await parseUpload(req, res, selfieUpload, maxParticipantSelfieBytes);
+export async function parseDealerSelfie(req: ApplicantHttpRequest, res: Response) {
+  await parseUpload(req, res, selfieUpload, maxDealerSelfieBytes);
   if (!req.file || req.file.mimetype !== 'image/jpeg' || Object.keys(req.body).length) return rejectApplicant(400);
   return req.file.buffer;
 }
