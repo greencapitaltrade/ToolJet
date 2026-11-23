@@ -7,6 +7,7 @@ import { MODULES } from '@modules/app/constants/modules';
 import { InitFeature } from '@modules/app/decorators/init-feature.decorator';
 import { InitModule } from '@modules/app/decorators/init-module';
 import { RedisService } from '@modules/redis/service';
+import { rejectApplicant } from '../applicant-session/fury';
 import { ApplicantHttpRequest, handleApplicantRequest } from '../applicant-session/http';
 import { ApplicantRedis } from '../applicant-session/store';
 import { DEALER_PARTICIPANT_ENV, DealerParticipant, parseDealerParticipantConfig } from './participant';
@@ -34,6 +35,16 @@ export class DealerOnboardingController {
   async handle(@Req() req: ApplicantHttpRequest, @Res() res: Response) {
     const settings = parseDealerOnboardingConfig(this.config.get<string>(DEALER_ONBOARDING_ENV));
     return handleApplicantRequest(req, res, settings, 'dealer', this.relay.run.bind(this.relay));
+  }
+
+  @Post('dossier')
+  @InitFeature(FEATURE_KEY.DEALER_ONBOARDING)
+  async dossier(@Req() req: ApplicantHttpRequest, @Res() res: Response) {
+    const settings = parseDealerOnboardingConfig(this.config.get<string>(DEALER_ONBOARDING_ENV));
+    return handleApplicantRequest(req, res, settings, 'dealer', (scope, body, id) => {
+      if (req.originalUrl.includes('?')) return rejectApplicant(400);
+      return this.relay.dossier(scope, body, id);
+    });
   }
 
   @Post('participant')

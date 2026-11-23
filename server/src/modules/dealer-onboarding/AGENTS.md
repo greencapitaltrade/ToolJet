@@ -21,3 +21,7 @@ the shared short-lived applicant store.
   the verified owner session. The participant route stores only the opaque
   invitation reference before OTP, then obtains the current receipt downstream.
   Keep copied links and the participant role out of query logs and storage.
+- The owner dossier form uses the dedicated same-origin route. Keep form values
+  in that request only. The bound session and Destiny determine the draft,
+  policy, version and available forms. Never add dossier fields to native
+  query parameters or the applicant session.

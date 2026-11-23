@@ -58,6 +58,16 @@ function setup() {
   const fetcher = jest.fn(async (_url, request) => {
     if (request.body instanceof FormData) return Response.json({ attached: true });
     const { query, variables } = JSON.parse(request.body);
+    if (new URL(_url).pathname === '/v2/dealer/dossier') {
+      const saved = variables.action === 'SAVE_OWN_DIN';
+      return Response.json({
+        version: saved ? 6 : 5,
+        history: 'bank_and_gst',
+        execution: 'registered_entity',
+        own_din: saved ? null : 'DIN',
+        bank_account_number: 'private',
+      });
+    }
     if (query.includes('dealerReferralEligibility'))
       return Response.json({ data: { dealerReferralEligibility: { organizationId: '39', eligible: true } } });
     if (query.includes('sessionCreateV2'))
@@ -115,6 +125,7 @@ function setup() {
     call,
     fetcher,
     cookie: () => session,
+    persisted: () => [...keys.values()].join(' '),
     setCompletionStage: (stage: string) => {
       completionStage = stage;
     },
@@ -126,6 +137,46 @@ function setup() {
     },
   };
 }
+
+it('binds the isolated dossier form to the current verified owner session and never stores field values', async () => {
+  const fixture = setup();
+  const dossier = (body: unknown) => fixture.service.dossier(config!, body, fixture.cookie());
+  await fixture.call('entry', {}, { referralToken });
+  await expect(dossier({ action: 'STATUS' })).rejects.toMatchObject({ status: 409 });
+  await fixture.call('requestOtp', { phone: '9999900001' });
+  await fixture.call('verifyOtp', { otp: '123456' });
+  await fixture.call('lookup', { pan: 'AAAFA1234A' });
+  await fixture.call('start', details);
+  await expect(fixture.call('SAVE_OWN_DIN', { din: '12345678' })).rejects.toMatchObject({ status: 400 });
+  await expect(dossier({ action: 'STATUS', draftId: draft.id })).rejects.toMatchObject({ status: 400 });
+  await expect(dossier({ action: 'STATUS' })).resolves.toEqual({
+    version: 5,
+    history: 'bank_and_gst',
+    execution: 'registered_entity',
+    own_din: 'DIN',
+  });
+  await expect(dossier({ action: 'SAVE_OWN_DIN', version: 4, fields: { din: '12345678' } })).rejects.toMatchObject({
+    status: 409,
+  });
+  expect(JSON.parse(fixture.fetcher.mock.calls.slice(-1)[0][1].body).variables.action).toBe('STATUS');
+  await expect(dossier({ action: 'SAVE_OWN_DIN', version: 5, fields: { din: '12345678' } })).resolves.toMatchObject({
+    own_din: null,
+    version: 6,
+  });
+  const [url, options] = fixture.fetcher.mock.calls.slice(-1)[0];
+  expect(String(url)).toBe('https://gateway.example.test/v2/dealer/dossier');
+  expect(options.headers).toMatchObject({ cookie: expect.stringMatching(/^authorization=/) });
+  expect(JSON.parse(options.body)).toEqual({
+    variables: { action: 'SAVE_OWN_DIN', referralToken, draftId: draft.id, version: 5, fields: { din: '12345678' } },
+  });
+  expect(fixture.persisted()).not.toContain('12345678');
+  expect(
+    sanitizeOAuthRequest({
+      url: '/api/dealer-onboarding/dossier',
+      body: { fields: { bank_account_number: '12345678' } },
+    }).body
+  ).toBe('[REDACTED]');
+});
 
 it('uses only current server-authorized dealer completion actions and versions', async () => {
   const fixture = setup();
