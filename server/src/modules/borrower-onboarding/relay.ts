@@ -23,6 +23,7 @@ const documents = {
   applicationFlow: `query BorrowerFlow($application_id: Int!) {
     applicationFlow(application_id: $application_id) {
       productId steps { nodeId stepType status label formFields borrowerAction }
+      documentRequest { stepId reason requiredDocuments }
     }
   }`,
   executeFlowStep: `mutation BorrowerStep($application_id: Int!, $type: DocumentStepType!, $kind: DocumentStepKind!, $data: JSON) {
@@ -299,15 +300,29 @@ export class BorrowerOnboarding {
         ...(!available && status === 'active' && browserSteps.has(stepType) && { actionUnavailable: true }),
       };
     });
-    return { id, steps, actions };
+    const request = flow.documentRequest;
+    const documentRequest =
+      object(request) &&
+      typeof request.stepId === 'string' &&
+      typeof request.reason === 'string' &&
+      request.reason.trim() &&
+      request.reason.length <= 500 &&
+      Array.isArray(request.requiredDocuments) &&
+      request.requiredDocuments.length === 1 &&
+      request.requiredDocuments[0] === 'bank_statement' &&
+      actions.some(({ nodeId, kind }) => nodeId === request.stepId && kind === 'AA')
+        ? { stepId: request.stepId, reason: request.reason, requiredDocuments: ['bank_statement'] }
+        : undefined;
+    return { id, steps, actions, documentRequest };
   }
 
   private async view(config: Config, state: State, key: string) {
-    const { id, steps, actions } = await this.journey(config, state, key);
+    const { id, steps, actions, documentRequest } = await this.journey(config, state, key);
     return {
       id,
       steps,
       actions: actions.map(({ nodeId, label, fields }) => ({ nodeId, label, ...(fields && { fields }) })),
+      ...(documentRequest && { documentRequest }),
     };
   }
 
