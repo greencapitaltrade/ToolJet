@@ -2,6 +2,7 @@ import {
   ApplicantFury,
   ApplicantScope,
   applicantScope,
+  isApplicantReferral,
   normalizeApplicantPhone,
   rejectApplicant as rejected,
 } from '../applicant-session/fury';
@@ -9,7 +10,6 @@ import { ApplicantRedis, ApplicantSessions, newApplicantHandle } from '../applic
 
 export const BORROWER_ONBOARDING_ENV = 'TOOLJET_BORROWER_ONBOARDING';
 
-const referralPattern = /^v3[.][A-Za-z0-9_-]{39,1021}$/;
 const keyPattern = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 const nodePattern = /^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}$/;
 const guestLifetime = 600;
@@ -135,8 +135,7 @@ function operation(value: unknown): Operation {
   const fields = value.fields;
   if (value.operation === 'entry' && !Object.keys(fields).length) {
     if (value.referralToken === undefined) return { name: 'entry' };
-    if (typeof value.referralToken === 'string' && referralPattern.test(value.referralToken))
-      return { name: 'entry', referral: value.referralToken };
+    if (isApplicantReferral(value.referralToken)) return { name: 'entry', referral: value.referralToken };
     return rejected(400);
   }
   if ('referralToken' in value) return rejected(400);

@@ -1,5 +1,6 @@
 const jwtPattern = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
 const accountId = /^[1-9][0-9]{0,18}$/;
+const referralPattern = /^v3[.][A-Za-z0-9_-]{39,1021}$/;
 const verifiedLifetime = 1800;
 
 export type ApplicantScope = {
@@ -11,6 +12,10 @@ export type ApplicantScope = {
 export type ApplicantPurpose = 'borrower' | 'dealer' | 'dealer-participant';
 type ApplicantIdentity = { device: string; phone?: string; auth?: { token: string } };
 type Payload = Record<string, unknown>;
+
+export function isApplicantReferral(value: unknown): value is string {
+  return typeof value === 'string' && referralPattern.test(value);
+}
 
 export function applicantScope(value: Payload): ApplicantScope | null {
   const { origin, organizationId, furyUrl, lspSecret } = value;
@@ -43,6 +48,14 @@ export function applicantScope(value: Payload): ApplicantScope | null {
   }
 }
 
+export function exactHttpsOrigin(value: unknown): value is string {
+  try {
+    return typeof value === 'string' && value.startsWith('https://') && new URL(value).origin === value;
+  } catch {
+    return false;
+  }
+}
+
 export class ApplicantRequestError extends Error {
   constructor(readonly status: number) {
     super('Applicant request unavailable');
@@ -72,7 +85,7 @@ export class ApplicantFury {
   /** The adapter supplies the fixed document. This never forwards browser headers or arbitrary GraphQL. */
   async request(
     scope: ApplicantScope,
-    operation: { field: string; query: string },
+    operation: { field: string; query: string; timeoutMs?: number },
     variables: Payload,
     identity?: ApplicantIdentity
   ): Promise<Payload> {
@@ -80,7 +93,7 @@ export class ApplicantFury {
       method: 'POST',
       redirect: 'error',
       cache: 'no-store',
-      signal: AbortSignal.timeout(5000),
+      signal: AbortSignal.timeout(operation.timeoutMs ?? 5000),
       headers: {
         'Content-Type': 'application/json',
         ...(identity?.device && { device: identity.device }),

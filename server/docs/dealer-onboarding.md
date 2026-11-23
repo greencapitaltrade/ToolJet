@@ -15,19 +15,6 @@ an identity grant. After OTP, the server uses the verified Fury session and the
 referral to bind an owned intake to the opaque session. Subsequent requests use
 the bound intake and the same verified Fury session.
 
-### Dealer owner dossier
-
-The dedicated `POST /api/dealer-onboarding/dossier` form route uses the
-same-origin verified dealer session. It accepts `STATUS` or one current form
-action with the displayed draft version. The relay supplies the draft and signed
-referral from the existing session and obtains the current form state from
-Destiny before writing. Results include the current version and available forms.
-Write values go directly from the native form to this route and remain outside
-ToolJet queries, tracing and applicant session storage.
-
-The `FURY_DEALER_OWNER_DOSSIER_ENABLED` and
-`DESTINY_DEALER_OWNER_DOSSIER_ENABLED` flags default off.
-
 | Operation | Input | Result |
 | --- | --- | --- |
 | `entry` | v3 `referralToken` and empty `fields` | `invite` or `phone` |
@@ -92,8 +79,8 @@ workflow is ready. The managed configuration uses the same four connection
 settings as dealer onboarding plus an exact HTTPS `kycOrigin` and
 `signingOrigin`. Redirects from a different origin are refused.
 
-The route accepts `entry`, `requestOtp` and `verifyOtp` using the same shapes as
-dealer admission. After independent OTP, `attach` accepts `fields.consentId`.
+The route accepts `entry`, `requestOtp` and `verifyOtp` using the same v3
+referral and phone syntax as dealer admission. After independent OTP, `attach` accepts `fields.consentId`.
 Fury and Destiny must match the receipt to the authenticated participant and
 the signed dealer parent before returning status. The server stores the receipt
 for the session. `status`, `startKyc`, `syncKyc`, `sign` and `withdraw` accept
@@ -115,8 +102,42 @@ verified mobile against the owner’s invitation. The relay stores the receipt
 in the participant session and continues through the same own-person actions.
 The separate existing-receipt entry remains available for compatibility.
 
-The staged app remains private. Participant selfie transport and native viewer
-verification are required before enabling this workflow.
+The participant relay offers selfie capture when Destiny confirms that the
+receipt and current Aadhaar evidence are eligible. The front-camera popup
+supplies a JPEG for `POST /api/dealer-onboarding/participant/selfie`. The
+endpoint accepts one JPEG up to 96 KiB with no form fields and uses the
+participant cookie and attached receipt. The image bypasses the native query
+and is never stored in the relay. Destiny rechecks consent, the case version
+and the same Aadhaar evidence after matching.
+
+The staged app remains private. Native viewer and provider verification are
+required before enabling this workflow.
+
+## Dealer owner's own identity
+
+`POST /api/dealer-onboarding/identity` uses the authenticated dealer cookie and
+accepts only `{ action: 'STATUS' | 'START' | 'SYNC' }`. A separate
+`POST /api/dealer-onboarding/identity/selfie` accepts one JPEG of up to 96 KiB.
+These requests bypass RunJS. The relay rechecks the current case and allowed
+action through Fury before reading or sending camera bytes. Keep
+`TOOLJET_DEALER_OWNER_KYC_ORIGIN` unset until the exact managed HTTPS origin
+matches Fury's `FURY_DEALER_OWNER_KYC_ORIGIN` and the downstream provider is
+verified. The browser receives a redirect only for an eligible DigiLocker
+start. The relay neither stores uploads nor exposes provider receipt or
+document references.
+
+## Dealer owner dossier
+
+The dedicated `POST /api/dealer-onboarding/dossier` form route uses the
+same-origin verified dealer session. It accepts `STATUS` or one current form
+action with the displayed draft version. The relay supplies the draft and signed
+referral from the existing session and obtains the current form state from
+Destiny before writing. Results include the current version and available forms.
+Write values go directly from the native form to this route and remain outside
+ToolJet queries, tracing and applicant session storage.
+
+The `FURY_DEALER_OWNER_DOSSIER_ENABLED` and
+`DESTINY_DEALER_OWNER_DOSSIER_ENABLED` flags default off.
 
 ## Owner agreement and submission
 

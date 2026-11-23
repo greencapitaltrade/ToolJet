@@ -2,15 +2,18 @@ import {
   ApplicantFury,
   ApplicantScope,
   applicantScope,
+  exactHttpsOrigin,
+  isApplicantReferral,
   normalizeApplicantPhone,
   rejectApplicant,
 } from '../applicant-session/fury';
 import { ApplicantRedis, ApplicantSessions, newApplicantHandle } from '../applicant-session/store';
 import { dealerDossierInput, requestDealerDossier } from './dossier';
 import { dealerProviderRedirect, parseDealerParticipantConfig } from './participant';
+import { dealerSelfieData } from './selfie';
 
 export const DEALER_ONBOARDING_ENV = 'TOOLJET_DEALER_ONBOARDING';
-const tokenPattern = /^v3[.][A-Za-z0-9_-]{39,1021}$/;
+export const DEALER_OWNER_KYC_ORIGIN = 'TOOLJET_DEALER_OWNER_KYC_ORIGIN';
 const panPattern = /^[A-Z]{3}[CFP][A-Z][0-9]{4}[A-Z]$/;
 const gstPattern = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]Z[0-9A-Z]$/;
 const uuidPattern = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
@@ -28,7 +31,20 @@ type State = {
   pan?: string;
   draftId?: string;
 };
+type VerifiedOwner = State & { phone: string };
 type SetCookie = (id: string, ttl: number) => void;
+export type OwnerKycScope = ApplicantScope & { kycOrigin?: string };
+const ownerKycActions = ['START', 'SYNC', 'SELFIE'];
+const ownerKycStatuses = ['not_started', 'pending', 'verified', 'failed', 'cancelled', 'unknown', 'requesting'];
+const ownerKycQuery = {
+  field: 'dealerOwnerKyc',
+  timeoutMs: 52_000,
+  query: `mutation DealerOwnerKyc($referralToken: String!, $draftId: ID!, $action: DealerOwnerKycAction!, $version: Int, $selfie: String) {
+    dealerOwnerKyc(referralToken: $referralToken, draftId: $draftId, action: $action, version: $version, selfie: $selfie) {
+      status version actions redirectUrl
+    }
+  }`,
+};
 
 const draftSelection = 'id status nextStep canWrite entityFields version documentActions { code label mode count }';
 export const maxDealerDocumentBytes = 10 * 1024 * 1024;
@@ -156,8 +172,7 @@ function operation(value: unknown): Operation {
   const keys = Object.keys(fields);
   if (value.operation === 'entry' && !keys.length) {
     if (value.referralToken === undefined) return { kind: 'entry' };
-    if (typeof value.referralToken === 'string' && tokenPattern.test(value.referralToken))
-      return { kind: 'entry', referral: value.referralToken };
+    if (isApplicantReferral(value.referralToken)) return { kind: 'entry', referral: value.referralToken };
   }
   if ('referralToken' in value) return rejectApplicant(400);
   if (value.operation === 'status' && !keys.length) return { kind: 'status' };
@@ -415,6 +430,83 @@ export class DealerOnboarding {
         input,
         this.fetcher
       );
+    });
+  }
+
+  private async withOwnerKyc(
+    scope: OwnerKycScope,
+    id: string | undefined,
+    run: (state: VerifiedOwner, binding: { draftId: string; referralToken: string }, origin: string) => Promise<unknown>
+  ) {
+    const origin = scope.kycOrigin;
+    if (!exactHttpsOrigin(origin)) return rejectApplicant(404);
+    const key = this.sessions.key(scope, id);
+    if (!key) return rejectApplicant(409);
+    return this.sessions.withLock(key, async () => {
+      const state = await this.sessions.get(key);
+      if (!state?.auth || !state.phone || !state.draftId) return rejectApplicant(409);
+      await this.sessions.rate(scope, 'owner-kyc', state.phone, 30, 60);
+      return run({ ...state, phone: state.phone }, { draftId: state.draftId, referralToken: state.referral }, origin);
+    });
+  }
+
+  private async ownerKycStatus(scope: OwnerKycScope, state: State, binding: Payload) {
+    const current = await this.fury.request(
+      scope,
+      { ...ownerKycQuery, timeoutMs: 7500 },
+      { ...binding, action: 'STATUS' },
+      state
+    );
+    const { status, actions, version } = current;
+    if (
+      typeof status !== 'string' ||
+      !ownerKycStatuses.includes(status) ||
+      typeof version !== 'number' ||
+      !Number.isSafeInteger(version) ||
+      version < 1 ||
+      !Array.isArray(actions) ||
+      actions.length > ownerKycActions.length ||
+      new Set(actions).size !== actions.length ||
+      !actions.every((action) => ownerKycActions.includes(action))
+    )
+      return rejectApplicant(503);
+    return { status, actions, version };
+  }
+
+  async ownerKyc(scope: OwnerKycScope, input: unknown, id: string | undefined) {
+    if (
+      !object(input) ||
+      Object.keys(input).length !== 1 ||
+      !['STATUS', 'START', 'SYNC'].includes(String(input.action))
+    )
+      return rejectApplicant(400);
+    const { action } = input;
+    return this.withOwnerKyc(scope, id, async (state, binding, origin) => {
+      const { status, actions, version } = await this.ownerKycStatus(scope, state, binding);
+      if (action === 'STATUS') return { status, actions };
+      if (!actions.includes(action)) return rejectApplicant(409);
+      const result = await this.fury.request(scope, ownerKycQuery, { ...binding, action, version }, state);
+      if (typeof result.status !== 'string' || !ownerKycStatuses.includes(result.status)) return rejectApplicant(503);
+      const view = { status: result.status };
+      if (action !== 'START' || result.redirectUrl == null) return view;
+      return { ...view, redirectUrl: dealerProviderRedirect(result.redirectUrl, origin) };
+    });
+  }
+
+  async uploadOwnerSelfie(scope: OwnerKycScope, read: () => Promise<Buffer>, id: string | undefined) {
+    return this.withOwnerKyc(scope, id, async (state, binding) => {
+      await this.sessions.rate(scope, 'owner-selfie', state.phone, 5, 60);
+      const { status, actions, version } = await this.ownerKycStatus(scope, state, binding);
+      if (status !== 'verified' || !actions.includes('SELFIE')) return rejectApplicant(409);
+      const selfie = dealerSelfieData(await read());
+      const result = await this.fury.request(
+        scope,
+        ownerKycQuery,
+        { ...binding, action: 'SELFIE', version, selfie },
+        state
+      );
+      if (result.status !== 'verified') return rejectApplicant(503);
+      return { status: 'verified' };
     });
   }
 

@@ -1,6 +1,6 @@
 # Dealer onboarding
 
-`controller.ts` keeps both same-origin routes behind the configured applicant
+`controller.ts` keeps the same-origin routes behind the configured applicant
 scope. `relay.ts` holds the referral, PAN and verified Fury device session in
 the shared short-lived applicant store.
 
@@ -18,7 +18,8 @@ the shared short-lived applicant store.
 - The participant route has its own configuration, Redis scope and HttpOnly
   cookie. It verifies OTP before attaching a consent receipt. Its trusted
   downstream verifies the signed dealer parent and the authenticated receipt
-  actor before displaying status or running an own-person action.
+  actor before displaying status or running an own-person action. Participant
+  invitations carry the dealer's v3 referral and an opaque invitation ID.
 - Owner handoff operations use the draft and signed referral already stored in
   the verified owner session. The participant route stores only the opaque
   invitation reference before OTP, then obtains the current receipt downstream.
@@ -31,3 +32,8 @@ the shared short-lived applicant store.
   session, and the matching dealer participant configuration's exact HTTPS
   signing origin. Keep the provider link out of session storage and return
   it only on an explicit own-sign action.
+- Dealer owner identity uses the existing dealer session and separate
+  same-origin identity routes. The relay obtains the current owner status from
+  Fury before an action or binary upload. No owner, signer, version or provider
+  URL comes from the browser. The owner and participant routes share the
+  bounded JPEG parser.
