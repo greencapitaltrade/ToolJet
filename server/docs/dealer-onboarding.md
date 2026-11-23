@@ -106,12 +106,16 @@ verification are required before enabling this workflow.
 
 ## Owner agreement and submission
 
-`agreementStatus` returns the current stage and at most one allowed action.
-`prepareAgreement`, `verifyBank`, `freezeAgreement`, `refreshSignatures`, and
-`submitForReview` accept no browser fields. The relay supplies the case,
+`agreementStatus` returns the current stage and available actions.
+`prepareAgreement`, `verifyBank`, `freezeAgreement`, `refreshSignatures`,
+`signOwnerAgreement`, and `submitForReview` accept no browser fields. The relay supplies the case,
 signed referral and current version from its authenticated owner session.
 Destiny checks the original owner and pinned dealer policy again for each
-operation. Responses omit account details, signed files and signer links.
+operation. `signOwnerAgreement` requires verified owner KYC and selfie evidence
+for the owner's entry in the frozen roster. It returns only that entry's link
+and requires an exact HTTPS `signingOrigin` in a matching
+`TOOLJET_DEALER_PARTICIPANT` configuration. The other completion operations
+omit signing links. Completion responses omit account details and signed files.
 
 Preparation requires registered evidence and opens any configured intermediate
 review. Bank verification uses the saved execution data, the pinned product,
@@ -121,5 +125,5 @@ frozen Aadhaar signer roster. Submission requires completed provider signing
 and opens independent review. Existing fee checks remain on review claims
 and decisions.
 
-The bank and legal execution details and the owner's own KYC, selfie, and
-signature continue through the existing private intake routes.
+The dedicated dossier and identity routes collect execution details and the
+owner's own identity evidence.
