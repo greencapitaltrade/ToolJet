@@ -56,6 +56,7 @@ const controls = {
 } as const;
 const browserSteps = new Set(['kyc_aadhaar', ...Object.keys(controls)]);
 const fieldTypes = ['text', 'textarea', 'email', 'phone', 'money', 'integer', 'date', 'select', 'boolean'];
+const maxFormAnswerLength = 400;
 
 type Config = ApplicantScope & {
   returnUrl: string;
@@ -72,7 +73,7 @@ type State = {
 };
 type Action = (typeof controls)[keyof typeof controls] & {
   nodeId: string;
-  fields?: { name: string; label: string; type: string; required: boolean; options?: string[] }[];
+  fields?: { name: string; label: string; type: string; required: boolean; options?: string[]; maxlength?: number }[];
 };
 type DocumentUpload = { nodeId: string; documents: { code: string; required: boolean }[] };
 type Operation =
@@ -164,7 +165,7 @@ function operation(value: unknown): Operation {
     object(fields.values) &&
     Object.keys(fields.values).length <= 24 &&
     Object.entries(fields.values).every(
-      ([name, answer]) => keyPattern.test(name) && typeof answer === 'string' && answer.length <= 400
+      ([name, answer]) => keyPattern.test(name) && typeof answer === 'string' && answer.length <= maxFormAnswerLength
     )
   ) {
     return { name: 'step', nodeId: fields.nodeId, values: fields.values };
@@ -191,7 +192,7 @@ function formFields(value: unknown): Action['fields'] {
       typeof field.required !== 'boolean'
     )
       return;
-    const { name, label, type, required, options } = field;
+    const { name, label, type, required, options, maxlength } = field;
     if (
       type === 'select' &&
       (!Array.isArray(options) ||
@@ -201,7 +202,20 @@ function formFields(value: unknown): Action['fields'] {
     )
       return;
     names.add(name);
-    result.push({ name, label, type, required, ...(type === 'select' && { options: options as string[] }) });
+    const hasTextLimit =
+      (type === 'text' || type === 'textarea') &&
+      typeof maxlength === 'number' &&
+      Number.isInteger(maxlength) &&
+      maxlength >= 1 &&
+      maxlength <= maxFormAnswerLength;
+    result.push({
+      name,
+      label,
+      type,
+      required,
+      ...(type === 'select' && { options: options as string[] }),
+      ...(hasTextLimit && { maxlength }),
+    });
   }
   return result;
 }

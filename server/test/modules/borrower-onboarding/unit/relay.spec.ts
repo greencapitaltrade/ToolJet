@@ -54,7 +54,7 @@ function setup() {
       status: string;
       allowedKinds?: string[];
       documentRequirements?: { type: string; provider: string; required: boolean; status?: string }[];
-      formFields?: { name: string; label: string; type: string; required: boolean }[];
+      formFields?: { name: string; label: string; type: string; required: boolean; maxlength?: number }[];
     }[];
   } = {
     productId: 12,
@@ -410,6 +410,28 @@ it('rejects cross-provider selectors, unavailable steps and added form fields', 
     kind: 'FORM',
     data: { nodeId: 'vehicle', formAnswers: { registered: 'true' } },
   });
+});
+
+it('passes configured text limits and forwards answers at those limits unchanged', async () => {
+  const { call, fetcher, flow } = setup();
+  const node = flow.steps.find(({ nodeId }) => nodeId === 'vehicle')!;
+  node.formFields = [
+    { name: 'reference', label: 'Reference', type: 'text', required: true, maxlength: 1 },
+    { name: 'description', label: 'Description', type: 'textarea', required: true, maxlength: 400 },
+    { name: 'legacy', label: 'Legacy field', type: 'text', required: false },
+  ];
+  await call('entry', {}, { referralToken });
+  await call('requestOtp', { phone: '9000000001' });
+  const view = await call('verifyOtp', { otp: '123456' });
+  expect(view).toMatchObject({ journey: { actions: [{ nodeId: 'vehicle', fields: node.formFields }] } });
+
+  const values = { reference: 'A', description: 'x'.repeat(400), legacy: 'old' };
+  await call('step', { nodeId: 'vehicle', values });
+  const submissions = fetcher.mock.calls
+    .map(([, req]) => JSON.parse(req.body))
+    .filter(({ query }) => query.includes('executeFlowStep'));
+  expect(submissions).toHaveLength(1);
+  expect(submissions[0].variables.data).toEqual({ nodeId: 'vehicle', formAnswers: values });
 });
 
 it('fails closed before any OTP on a foreign or invalid scoped invitation', async () => {
