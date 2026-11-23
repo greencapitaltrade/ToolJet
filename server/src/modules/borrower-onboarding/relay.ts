@@ -7,11 +7,13 @@ import {
   rejectApplicant as rejected,
 } from '../applicant-session/fury';
 import { ApplicantRedis, ApplicantSessions, newApplicantHandle } from '../applicant-session/store';
+import { maxApplicantDocumentBytes } from '../applicant-session/upload';
 
 export const BORROWER_ONBOARDING_ENV = 'TOOLJET_BORROWER_ONBOARDING';
 
 const keyPattern = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 const nodePattern = /^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}$/;
+const documentCode = /^[A-Za-z0-9_-]{1,64}$/;
 const guestLifetime = 600;
 const documents = {
   borrowerReferralEligibility: `mutation BorrowerEligibility($referral_token: String!) {
@@ -23,7 +25,7 @@ const documents = {
   applicationFlow: `query BorrowerFlow($application_id: Int!) {
     applicationFlow(application_id: $application_id) {
       productId
-      steps { nodeId stepType status label formFields allowedKinds documentRequirements { type provider } }
+      steps { nodeId stepType status label formFields allowedKinds documentRequirements { type provider required status } }
       documentRequest { stepId reason requiredDocuments }
     }
   }`,
@@ -70,6 +72,7 @@ type Action = (typeof controls)[keyof typeof controls] & {
   nodeId: string;
   fields?: { name: string; label: string; type: string; required: boolean; options?: string[] }[];
 };
+type DocumentUpload = { nodeId: string; documents: { code: string; required: boolean }[] };
 type Operation =
   | { name: 'entry'; referral?: string }
   | { name: 'status' }
@@ -205,7 +208,10 @@ export class BorrowerOnboarding {
   private readonly sessions: ApplicantSessions<State>;
   private readonly fury: ApplicantFury;
 
-  constructor(redis: ApplicantRedis, fetcher: typeof fetch = fetch) {
+  constructor(
+    redis: ApplicantRedis,
+    private readonly fetcher: typeof fetch = fetch
+  ) {
     this.sessions = new ApplicantSessions(redis, 'borrower');
     this.fury = new ApplicantFury(fetcher);
   }
@@ -251,6 +257,7 @@ export class BorrowerOnboarding {
       return rejected(503);
     const seen = new Set<string>();
     const actions: Action[] = [];
+    const documentUploads: DocumentUpload[] = [];
     const steps = upstreamSteps.map((step) => {
       if (
         !object(step) ||
@@ -272,6 +279,21 @@ export class BorrowerOnboarding {
         const explicitKind = Array.isArray(kinds) && kinds.includes(control.kind);
         const kindAllowed = explicitKind || (kinds == null && stepType !== 'kyc_pan' && stepType !== 'bank_statement');
         const docs = step.documentRequirements;
+        const pendingManual =
+          stepType === 'document_collection' && Array.isArray(docs)
+            ? docs.flatMap((doc) =>
+                doc?.provider === 'manual' &&
+                doc.status === 'pending' &&
+                typeof doc.type === 'string' &&
+                documentCode.test(doc.type)
+                  ? [{ code: doc.type, required: doc.required === true }]
+                  : []
+              )
+            : [];
+        if (pendingManual.length) {
+          available = true;
+          documentUploads.push({ nodeId, documents: pendingManual });
+        }
         const digilocker =
           Array.isArray(docs) &&
           docs.length > 0 &&
@@ -316,15 +338,16 @@ export class BorrowerOnboarding {
       actions.some(({ nodeId, kind }) => nodeId === request.stepId && kind === 'AA')
         ? { stepId: request.stepId, reason: request.reason, requiredDocuments: ['bank_statement'] }
         : undefined;
-    return { id, steps, actions, documentRequest };
+    return { id, steps, actions, documentRequest, documentUploads };
   }
 
   private async view(config: Config, state: State, key: string) {
-    const { id, steps, actions, documentRequest } = await this.journey(config, state, key);
+    const { id, steps, actions, documentRequest, documentUploads } = await this.journey(config, state, key);
     return {
       id,
       steps,
       actions: actions.map(({ nodeId, label, fields }) => ({ nodeId, label, ...(fields && { fields }) })),
+      ...(documentUploads.length > 0 && { documentUploads }),
       ...(documentRequest && { documentRequest }),
     };
   }
@@ -378,6 +401,51 @@ export class BorrowerOnboarding {
       journey: await this.view(config, state, cacheKey),
       ...(redirect && { redirectUrl: redirect.href }),
     };
+  }
+
+  async upload(config: Config, read: () => Promise<unknown>, sessionId: string | undefined) {
+    const key = this.sessions.key(config, sessionId);
+    if (!sessionId || !key) return rejected(409);
+    return this.sessions.withLock(key, async () => {
+      const state = await this.sessions.get(key);
+      if (!state?.auth?.applicationId) return rejected(409);
+      await this.sessions.rate(config, 'upload', sessionId, 20, 120);
+      const input = await read();
+      if (
+        !object(input) ||
+        !keys(input, ['nodeId', 'code', 'file']) ||
+        typeof input.nodeId !== 'string' ||
+        !nodePattern.test(input.nodeId) ||
+        typeof input.code !== 'string' ||
+        !documentCode.test(input.code) ||
+        !Buffer.isBuffer(input.file) ||
+        !input.file.length ||
+        input.file.length > maxApplicantDocumentBytes
+      )
+        return rejected(400);
+
+      const { nodeId, code, file } = input;
+      const current = await this.journey(config, state, key);
+      if (
+        !current.documentUploads.some((step) => step.nodeId === nodeId && step.documents.some((d) => d.code === code))
+      )
+        return rejected(409);
+
+      const body = new FormData();
+      body.set('metadata', JSON.stringify({ applicationId: current.id, nodeId, code }));
+      body.set('file', new Blob([new Uint8Array(file)]), 'evidence');
+      const response = await this.fetcher(new URL('/v2/borrower/document', config.furyUrl), {
+        method: 'POST',
+        redirect: 'error',
+        cache: 'no-store',
+        signal: AbortSignal.timeout(48_000),
+        headers: { device: state.device, cookie: `authorization=${state.auth.token}; device=${state.device}` },
+        body,
+      });
+      if ([401, 403, 404, 409, 422].includes(response.status)) return rejected(response.status);
+      if (!response.ok || (await response.json())?.attached !== true) return rejected(503);
+      return { state: 'journey', journey: await this.view(config, state, key) };
+    });
   }
 
   async run(config: Config | null, input: unknown, id: string | undefined, setCookie: SetCookie) {

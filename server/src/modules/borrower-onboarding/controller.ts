@@ -9,6 +9,7 @@ import { InitModule } from '@modules/app/decorators/init-module';
 import { RedisService } from '@modules/redis/service';
 import { ApplicantHttpRequest, handleApplicantRequest } from '../applicant-session/http';
 import { BORROWER_ONBOARDING_ENV, BorrowerOnboarding, parseBorrowerOnboardingConfig } from './relay';
+import { parseBorrowerUpload } from './upload';
 
 @Controller('borrower-onboarding')
 @InitModule(MODULES.ROOT)
@@ -30,5 +31,19 @@ export class BorrowerOnboardingController {
   async handle(@Req() req: ApplicantHttpRequest, @Res() res: Response) {
     const settings = parseBorrowerOnboardingConfig(this.config.get<string>(BORROWER_ONBOARDING_ENV));
     return handleApplicantRequest(req, res, settings, 'borrower', this.relay.run.bind(this.relay));
+  }
+
+  @Post('document')
+  @InitFeature(FEATURE_KEY.BORROWER_ONBOARDING)
+  async upload(@Req() req: ApplicantHttpRequest, @Res() res: Response) {
+    const settings = parseBorrowerOnboardingConfig(this.config.get<string>(BORROWER_ONBOARDING_ENV));
+    return handleApplicantRequest(
+      req,
+      res,
+      settings,
+      'borrower',
+      (scope, _body, id) => this.relay.upload(scope, () => parseBorrowerUpload(req, res), id),
+      'multipart/form-data'
+    );
   }
 }

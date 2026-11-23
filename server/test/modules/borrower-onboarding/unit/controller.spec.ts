@@ -26,7 +26,7 @@ function fixture(config: string | undefined = settings) {
     new ConfigService(config ? { TOOLJET_BORROWER_ONBOARDING: config } : {}),
     { getClient: () => redis } as unknown as RedisService
   );
-  function invoke(headers: Record<string, string> = {}, body: Record<string, unknown> = {}) {
+  function invoke(headers: Record<string, string> = {}, body: Record<string, unknown> = {}, upload = false) {
     const request = {
       get: (name: string) => (name === 'origin' ? (headers[name] ?? origin) : headers[name]),
       is: (type: string) => headers['content-type'] === type,
@@ -39,7 +39,8 @@ function fixture(config: string | undefined = settings) {
       json: jest.fn().mockReturnThis(),
       cookie: jest.fn().mockReturnThis(),
     };
-    return { response, done: next.handle(request as unknown as Request, response as unknown as Response) };
+    const handler = upload ? next.upload.bind(next) : next.handle.bind(next);
+    return { response, done: handler(request as unknown as Request, response as unknown as Response) };
   }
   return { invoke, redis };
 }
@@ -65,6 +66,21 @@ it('rejects exact configured route boundary failures before reaching Redis', asy
   const disabled = fixture('invalid').invoke();
   await disabled.done;
   expect(disabled.response.status).toHaveBeenCalledWith(404);
+});
+
+it('requires the exact browser origin, multipart and a verified session for document uploads', async () => {
+  const { invoke, redis } = fixture();
+  for (const [headers, status] of [
+    [{ origin: 'https://another.example.test', 'content-type': 'multipart/form-data' }, 403],
+    [{ origin, 'content-type': 'application/json' }, 415],
+    [{ origin, 'content-type': 'multipart/form-data' }, 409],
+  ] as const) {
+    const { response, done } = invoke(headers, {}, true);
+    await done;
+    expect(response.status).toHaveBeenCalledWith(status);
+    expect(response.json).toHaveBeenCalledWith({ error: 'Borrower onboarding request unavailable' });
+  }
+  expect(redis.call).not.toHaveBeenCalled();
 });
 
 it('issues only an opaque host-only session cookie on an eligible exact-origin entry', async () => {

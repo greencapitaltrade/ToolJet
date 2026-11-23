@@ -1,7 +1,8 @@
-import type { RequestHandler, Response } from 'express';
+import type { Response } from 'express';
 import * as multer from 'multer';
-import { ApplicantRequestError, rejectApplicant } from '../applicant-session/fury';
+import { rejectApplicant } from '../applicant-session/fury';
 import type { ApplicantHttpRequest } from '../applicant-session/http';
+import { parseApplicantUpload } from '../applicant-session/upload';
 import { maxDealerSelfieBytes } from './selfie';
 import { maxDealerDocumentBytes } from './relay';
 
@@ -14,19 +15,8 @@ const selfieUpload = multer({
   limits: { fileSize: maxDealerSelfieBytes, files: 1, fields: 0, parts: 2 },
 }).single('file');
 
-async function parseUpload(req: ApplicantHttpRequest, res: Response, parser: RequestHandler, maxBytes: number) {
-  if (!req.is('multipart/form-data')) return rejectApplicant(415);
-  if (Number(req.get('content-length')) > maxBytes + 4096) return rejectApplicant(413);
-  await new Promise<void>((resolve, reject) => {
-    parser(req, res, (error) => {
-      if (error) reject(new ApplicantRequestError(error.code === 'LIMIT_FILE_SIZE' ? 413 : 400));
-      else resolve();
-    });
-  });
-}
-
 export async function parseDealerUpload(req: ApplicantHttpRequest, res: Response) {
-  await parseUpload(req, res, upload, maxDealerDocumentBytes);
+  await parseApplicantUpload(req, res, upload, maxDealerDocumentBytes);
   if (!req.file || Object.keys(req.body).some((key) => !['code', 'location'].includes(key)))
     return rejectApplicant(400);
   try {
@@ -41,7 +31,7 @@ export async function parseDealerUpload(req: ApplicantHttpRequest, res: Response
 }
 
 export async function parseDealerSelfie(req: ApplicantHttpRequest, res: Response) {
-  await parseUpload(req, res, selfieUpload, maxDealerSelfieBytes);
+  await parseApplicantUpload(req, res, selfieUpload, maxDealerSelfieBytes);
   if (!req.file || req.file.mimetype !== 'image/jpeg' || Object.keys(req.body).length) return rejectApplicant(400);
   return req.file.buffer;
 }

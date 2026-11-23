@@ -53,7 +53,7 @@ function setup() {
       label: string;
       status: string;
       allowedKinds?: string[];
-      documentRequirements?: { type: string; provider: string; required: boolean }[];
+      documentRequirements?: { type: string; provider: string; required: boolean; status?: string }[];
       formFields?: { name: string; label: string; type: string; required: boolean }[];
     }[];
   } = {
@@ -72,11 +72,15 @@ function setup() {
         stepType: 'document_collection',
         label: 'Battery invoice',
         status: 'active',
-        documentRequirements: [{ type: 'invoice', provider: 'manual', required: true }],
+        documentRequirements: [{ type: 'invoice', provider: 'manual', required: true, status: 'pending' }],
       },
     ],
   };
   const fetcher = jest.fn(async (_url, request) => {
+    if (request.body instanceof FormData) {
+      flow.steps.find(({ nodeId }) => nodeId === 'invoice')!.documentRequirements![0].status = 'collected';
+      return Response.json({ attached: true });
+    }
     const { query, variables } = JSON.parse(request.body);
     const body = query.includes('borrowerReferralEligibility')
       ? { borrowerReferralEligibility: { organizationId: '39', productId: 12 } }
@@ -135,9 +139,8 @@ it('keeps all auth and application authority server side across the full relay',
     journey: {
       id: 701,
       actions: [{ nodeId: 'vehicle' }],
-      steps: expect.arrayContaining([
-        { nodeId: 'invoice', label: 'Battery invoice', status: 'active', actionUnavailable: true },
-      ]),
+      documentUploads: [{ nodeId: 'invoice', documents: [{ code: 'invoice', required: true }] }],
+      steps: expect.arrayContaining([{ nodeId: 'invoice', label: 'Battery invoice', status: 'active' }]),
     },
   });
   expect(JSON.stringify(view)).not.toMatch(/header\.|fixture-private|device|provider_reference/);
@@ -158,6 +161,35 @@ it('keeps all auth and application authority server side across the full relay',
   const flowRead = requests.find(({ query }) => query.includes('applicationFlow'));
   expect(flowRead.query).toMatch(/steps\s*\{\s*nodeId stepType status label formFields/);
   expect(flowRead.query).not.toContain('borrowerAction');
+});
+
+it('uploads only configured pending manual evidence using its bound actor and case', async () => {
+  const { call, fetcher, getCookie, service, flow } = setup();
+  const file = Buffer.from('%PDF-1.4 fixture');
+  const read = jest.fn().mockResolvedValue({ nodeId: 'invoice', code: 'invoice', file });
+  await call('entry', {}, { referralToken });
+  await expect(service.upload(config!, read, getCookie())).rejects.toMatchObject({ status: 409 });
+  expect(read).not.toHaveBeenCalled();
+  await call('requestOtp', { phone: '9000000001' });
+  await call('verifyOtp', { otp: '123456' });
+  const bad = { nodeId: 'invoice', code: 'pan', file };
+  await expect(service.upload(config!, async () => bad, getCookie())).rejects.toMatchObject({ status: 409 });
+  await expect(
+    service.upload(config!, async () => ({ ...bad, applicationId: 999 }), getCookie())
+  ).rejects.toMatchObject({ status: 400 });
+  const result = await service.upload(config!, read, getCookie());
+  expect(result).not.toHaveProperty('journey.documentUploads');
+  expect(result).toMatchObject({ state: 'journey', journey: { id: 701 } });
+  const uploads = fetcher.mock.calls.filter(([, req]) => req.body instanceof FormData);
+  expect(uploads).toHaveLength(1);
+  const [url, request] = uploads[0];
+  expect(String(url)).toBe('https://gateway.example.test/v2/borrower/document');
+  expect(request.headers.cookie).toMatch(/^authorization=.+; device=/);
+  expect(request.headers['api-secret']).toBeUndefined();
+  expect(JSON.parse(request.body.get('metadata'))).toEqual({ applicationId: 701, nodeId: 'invoice', code: 'invoice' });
+  await expect(request.body.get('file').text()).resolves.toBe(file.toString());
+  flow.steps.find(({ nodeId }) => nodeId === 'invoice')!.status = 'completed';
+  await expect(service.upload(config!, read, getCookie())).rejects.toMatchObject({ status: 409 });
 });
 
 it('offers DigiLocker only for the active KYC node, and refreshes the step before submission', async () => {
