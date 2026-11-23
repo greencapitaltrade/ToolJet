@@ -228,8 +228,10 @@ export class SessionUtilService {
       })
     );
     const identity = session?.oidcIdentity;
-    if (identity?.issuer !== settings.issuer || !identity.sub) throw new UnauthorizedException();
-    return { issuer: identity.issuer, sub: identity.sub };
+    if (identity?.issuer !== settings.issuer || identity.clientId !== settings.clientId || !identity.sub) {
+      throw new UnauthorizedException();
+    }
+    return { issuer: identity.issuer, sub: identity.sub, clientId: identity.clientId };
   }
 
   async getPermissionDataToAuthorize(

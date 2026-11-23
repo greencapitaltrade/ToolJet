@@ -4,6 +4,7 @@ import { PartnerOpsController, PartnerOpsGuard } from '@modules/auth/oauth/partn
 import type { SessionUtilService } from '@modules/session/util.service';
 
 const issuer = 'https://issuer.example.test/oidc';
+const clientId = 'test-client';
 const workspaceId = 'e38e7590-76c7-46b1-9413-d56ec6ee28af';
 const tooljetOrigin = 'https://workspace.example.test';
 const thorOrigin = 'http://thor.default.svc.cluster.local';
@@ -34,14 +35,14 @@ beforeEach(() => {
     TOOLJET_EDITION: 'ce',
     TOOLJET_HOST: tooljetOrigin,
     TOOLJET_OIDC_ISSUER: issuer,
-    TOOLJET_OIDC_CLIENT_ID: 'test-client',
+    TOOLJET_OIDC_CLIENT_ID: clientId,
     TOOLJET_OIDC_CLIENT_SECRET: 'synthetic-test-only-sign-in-client',
     TOOLJET_OIDC_WORKSPACE_ID: workspaceId,
     TOOLJET_PARTNER_OPS_ISSUER: issuer,
     TOOLJET_PARTNER_OPS_THOR_ORIGIN: thorOrigin,
     TOOLJET_PARTNER_OPS_UPSTREAM_ORIGIN: upstream,
   });
-  session.getOidcActor.mockReset().mockResolvedValue({ issuer, sub: '42' });
+  session.getOidcActor.mockReset().mockResolvedValue({ issuer, sub: '42', clientId });
   jest.spyOn(global, 'fetch').mockImplementation(async (url) => {
     if (url === thorOrigin + '/v1/users/oidc-subject/42') {
       return globalThis.Response.json({ sub: '42', organization_id: '9007199254740993' });
@@ -83,6 +84,7 @@ describe('partner operator workspace relay', () => {
       'x-gct-org-id': '9000',
       'x-gct-user-id': '9000',
       'x-gct-oidc-issuer': 'https://foreign.example',
+      'x-gct-oidc-client-id': 'untrusted-client',
       'x-gct-oidc-subject': '24',
       authorization: 'Bearer untrusted',
       'x-gct-app': 'untrusted',
@@ -93,7 +95,11 @@ describe('partner operator workspace relay', () => {
     expect(fetch).toHaveBeenNthCalledWith(
       1,
       thorOrigin + '/v1/users/oidc-subject/42',
-      expect.objectContaining({ method: 'GET', redirect: 'error', headers: { 'x-gct-oidc-issuer': issuer } })
+      expect.objectContaining({
+        method: 'GET',
+        redirect: 'error',
+        headers: { 'x-gct-oidc-issuer': issuer, 'x-gct-oidc-client-id': clientId },
+      })
     );
     expect(fetch).toHaveBeenNthCalledWith(
       2,
@@ -134,8 +140,9 @@ describe('partner operator workspace relay', () => {
 
   it('rejects missing, invalid and foreign OIDC sessions', async () => {
     for (const actor of [
-      { issuer, sub: 'abc' },
-      { issuer: 'https://foreign.example', sub: '42' },
+      { issuer, sub: 'abc', clientId },
+      { issuer: 'https://foreign.example', sub: '42', clientId },
+      { issuer, sub: '42', clientId: 'previous-client' },
     ]) {
       session.getOidcActor.mockResolvedValueOnce(actor);
       expect((await relay({ operation: 'session' })).status).toBe(401);

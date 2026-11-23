@@ -81,7 +81,12 @@ export class ConfiguredOidcService {
       }
 
       const email = claims.email_verified === true && typeof claims.email === 'string' ? claims.email : undefined;
-      await this.establishSession(response, settings.workspaceId, { issuer: claims.iss, sub: claims.sub }, email);
+      await this.establishSession(
+        response,
+        settings.workspaceId,
+        { issuer: claims.iss, sub: claims.sub, clientId: settings.clientId },
+        email
+      );
       return oidcReturnPath(flow.returnTo, settings);
     } catch {
       // Provider callback errors may include the code or token response.

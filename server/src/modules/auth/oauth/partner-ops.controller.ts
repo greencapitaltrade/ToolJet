@@ -59,6 +59,7 @@ function settings() {
     }
     return {
       issuer: oidc.issuer,
+      clientId: oidc.clientId,
       origin: oidc.origin,
       workspaceId: oidc.workspaceId,
       endpoint: new URL('/v1/channel-partners/operator', upstream).href,
@@ -129,13 +130,15 @@ export class PartnerOpsController {
     const input = validatedOperation(body);
     if (!input) return fail(400);
     const actor = await this.sessions.getOidcActor(request.user).catch(() => null);
-    if (actor?.issuer !== config.issuer || !positiveId(actor.sub)) return fail(401);
+    if (actor?.issuer !== config.issuer || actor.clientId !== config.clientId || !positiveId(actor.sub)) {
+      return fail(401);
+    }
 
     try {
       const identity = await fetch(new URL(`/v1/users/oidc-subject/${actor.sub}`, config.thorOrigin).href, {
         method: 'GET',
         redirect: 'error',
-        headers: { 'x-gct-oidc-issuer': actor.issuer },
+        headers: { 'x-gct-oidc-issuer': actor.issuer, 'x-gct-oidc-client-id': actor.clientId },
         signal: AbortSignal.timeout(5_000),
       });
       if (!identity.ok) return fail(identity.status === 404 ? 401 : 503);

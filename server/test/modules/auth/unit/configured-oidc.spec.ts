@@ -122,7 +122,12 @@ describe('Configured CE OIDC', () => {
       { code: 'provider-code', state },
       expect.objectContaining({ state, nonce: 'provider-nonce', code_verifier: 'private-verifier' })
     );
-    expect(establishSession).toHaveBeenCalledWith(response, workspaceId, { issuer, sub: '123' }, undefined);
+    expect(establishSession).toHaveBeenCalledWith(
+      response,
+      workspaceId,
+      { issuer, sub: '123', clientId: environment.TOOLJET_OIDC_CLIENT_ID },
+      undefined
+    );
 
     consume.mockResolvedValueOnce(null);
     await expect(service.complete(request as never, response as never)).rejects.toThrow(UnauthorizedException);
@@ -181,7 +186,7 @@ describe('Configured CE OIDC', () => {
 
   it('uses an existing issuer/subject binding even if the provider email changes', async () => {
     const { service, workspace, user, manager, sessions } = prepareAccount('tooljet-user');
-    const identity = { issuer, sub: '123' };
+    const identity = { issuer, sub: '123', clientId: environment.TOOLJET_OIDC_CLIENT_ID };
 
     await service.establishSession(null, workspaceId, identity, 'changed@example.test');
 
@@ -212,7 +217,12 @@ describe('Configured CE OIDC', () => {
     manager.query.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
 
     await expect(
-      service.establishSession(null, workspaceId, { issuer, sub: 'another-subject' }, 'user@example.test')
+      service.establishSession(
+        null,
+        workspaceId,
+        { issuer, sub: 'another-subject', clientId: environment.TOOLJET_OIDC_CLIENT_ID },
+        'user@example.test'
+      )
     ).rejects.toThrow(UnauthorizedException);
 
     expect(sessions.generateLoginResultPayload).not.toHaveBeenCalled();
