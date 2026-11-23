@@ -4,7 +4,7 @@ import { sanitizeOAuthRequest } from '../../../../src/otel/sanitize';
 import { ApplicantSessions } from '../../../../src/modules/applicant-session/store';
 
 const origin = 'https://app.example.test';
-const referralToken = 'v2.' + 'a'.repeat(60);
+const referralToken = 'v3.' + 'a'.repeat(60);
 const config = parseBorrowerOnboardingConfig(
   JSON.stringify({
     origin,
@@ -111,6 +111,10 @@ function makeToken(device: string, phone: string, org = '39') {
 
 it('keeps all auth and application authority server side across the full relay', async () => {
   const { call, fetcher, getCookie, service } = setup();
+  await expect(call('entry', {}, { referralToken: 'v2.' + referralToken.slice(3) })).rejects.toMatchObject({
+    status: 400,
+  });
+  expect(fetcher).not.toHaveBeenCalled();
   await expect(call('entry', {}, { referralToken })).resolves.toEqual({ state: 'phone' });
   const guest = getCookie();
   await expect(call('requestOtp', { phone: '9000000001' })).resolves.toEqual({ state: 'otp' });

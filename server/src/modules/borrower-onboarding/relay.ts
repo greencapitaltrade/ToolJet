@@ -9,7 +9,7 @@ import { ApplicantRedis, ApplicantSessions, newApplicantHandle } from '../applic
 
 export const BORROWER_ONBOARDING_ENV = 'TOOLJET_BORROWER_ONBOARDING';
 
-const referralPattern = /^v2[.][A-Za-z0-9_-]{39,1021}$/;
+const referralPattern = /^v3[.][A-Za-z0-9_-]{39,1021}$/;
 const keyPattern = /^[A-Za-z][A-Za-z0-9_]{0,63}$/;
 const nodePattern = /^[A-Za-z0-9_][A-Za-z0-9_.:-]{0,127}$/;
 const guestLifetime = 600;
