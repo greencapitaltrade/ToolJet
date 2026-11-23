@@ -35,8 +35,8 @@ type State = {
 };
 type VerifiedOwner = State & { phone: string };
 type SetCookie = (id: string, ttl: number) => void;
-export type OwnerKycScope = ApplicantScope & { kycOrigin?: string };
-const ownerKycActions = ['START', 'SYNC', 'SELFIE'];
+export type OwnerKycScope = DealerScope & { kycOrigin?: string };
+const ownerKycActions = ['START', 'SYNC', 'SELFIE', 'SIGN'];
 const ownerKycStatuses = ['not_started', 'pending', 'verified', 'failed', 'cancelled', 'unknown', 'requesting'];
 const ownerKycQuery = {
   field: 'dealerOwnerKyc',
@@ -539,14 +539,18 @@ export class DealerOnboarding {
       !actions.every((action) => ownerKycActions.includes(action))
     )
       return rejectApplicant(503);
-    return { status, actions, version };
+    return {
+      status,
+      actions: actions.filter((action) => action !== 'SIGN' || exactHttpsOrigin(scope.signingOrigin)),
+      version,
+    };
   }
 
   async ownerKyc(scope: OwnerKycScope, input: unknown, id: string | undefined) {
     if (
       !object(input) ||
       Object.keys(input).length !== 1 ||
-      !['STATUS', 'START', 'SYNC'].includes(String(input.action))
+      !['STATUS', 'START', 'SYNC', 'SIGN'].includes(String(input.action))
     )
       return rejectApplicant(400);
     const { action } = input;
@@ -555,6 +559,10 @@ export class DealerOnboarding {
       if (action === 'STATUS') return { status, actions };
       if (!actions.includes(action)) return rejectApplicant(409);
       const result = await this.fury.request(scope, ownerKycQuery, { ...binding, action, version }, state);
+      if (action === 'SIGN') {
+        if (result.status !== 'requested') return rejectApplicant(503);
+        return { status: 'requested', redirectUrl: dealerProviderRedirect(result.redirectUrl, scope.signingOrigin) };
+      }
       if (typeof result.status !== 'string' || !ownerKycStatuses.includes(result.status)) return rejectApplicant(503);
       const view = { status: result.status };
       if (action !== 'START' || result.redirectUrl == null) return view;

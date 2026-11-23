@@ -76,7 +76,8 @@ export class DealerOnboardingController {
   }
 
   private ownerKycSettings() {
-    const settings = parseDealerOnboardingConfig(this.config.get<string>(DEALER_ONBOARDING_ENV));
+    const participant = parseDealerParticipantConfig(this.config.get<string>(DEALER_PARTICIPANT_ENV));
+    const settings = parseDealerOnboardingConfig(this.config.get<string>(DEALER_ONBOARDING_ENV), participant);
     const kycOrigin = this.config.get<string>(DEALER_OWNER_KYC_ORIGIN);
     return settings && exactHttpsOrigin(kycOrigin) ? { ...settings, kycOrigin } : null;
   }

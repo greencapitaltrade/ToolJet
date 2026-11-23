@@ -474,6 +474,36 @@ async function ownerSession() {
 
 const ownerKyc = (value: unknown) => Response.json({ data: { dealerOwnerKyc: value } });
 
+it('uses the verified owner identity action for the saved draft and returns one configured signing URL', async () => {
+  const { service, cookie, fetcher } = await ownerSession();
+  const scope = { ...ownerScope, signingOrigin: signing.signingOrigin };
+  const status = { status: 'verified', actions: ['SIGN'], version: 3 };
+  fetcher.mockResolvedValueOnce(ownerKyc(status));
+  await expect(service.ownerKyc(ownerScope, { action: 'STATUS' }, cookie())).resolves.toEqual({
+    status: 'verified',
+    actions: [],
+  });
+  fetcher.mockResolvedValueOnce(ownerKyc(status));
+  await expect(service.ownerKyc(scope, { action: 'STATUS' }, cookie())).resolves.toEqual({
+    status: 'verified',
+    actions: ['SIGN'],
+  });
+  await expect(service.ownerKyc(scope, { action: 'SIGN', version: 3 }, cookie())).rejects.toMatchObject({
+    status: 400,
+  });
+  fetcher.mockResolvedValueOnce(ownerKyc(status));
+  fetcher.mockResolvedValueOnce(ownerKyc({ status: 'requested', redirectUrl: signingUrl, links: ['private'] }));
+  await expect(service.ownerKyc(scope, { action: 'SIGN' }, cookie())).resolves.toEqual({
+    status: 'requested',
+    redirectUrl: signingUrl,
+  });
+  const latest = JSON.parse(fetcher.mock.calls[fetcher.mock.calls.length - 1][1].body);
+  expect(latest.variables).toEqual({ action: 'SIGN', referralToken, draftId: draft.id, version: 3 });
+  fetcher.mockResolvedValueOnce(ownerKyc(status));
+  fetcher.mockResolvedValueOnce(ownerKyc({ status: 'requested', redirectUrl: 'https://other.example.test/' }));
+  await expect(service.ownerKyc(scope, { action: 'SIGN' }, cookie())).rejects.toMatchObject({ status: 503 });
+});
+
 it('authorizes the owner KYC route only with an explicitly pinned TLS origin and saved session', async () => {
   const { service } = setup();
   await expect(service.ownerKyc(config!, { action: 'STATUS' }, undefined)).rejects.toMatchObject({ status: 404 });

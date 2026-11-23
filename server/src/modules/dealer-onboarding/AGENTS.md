@@ -39,4 +39,5 @@ the shared short-lived applicant store.
   same-origin identity routes. The relay obtains the current owner status from
   Fury before an action or binary upload. No owner, signer, version or provider
   URL comes from the browser. The owner and participant routes share the
-  bounded JPEG parser.
+  bounded JPEG parser. The own-sign action uses the same scoped identity route
+  and exact configured signing origin as the existing completion route.
