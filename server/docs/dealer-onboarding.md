@@ -70,6 +70,19 @@ gateway retains bearer state and broad private query envelopes. The public
 continuation requires explicit actions for the confirmed applicant role and
 current step and must be tested before activation.
 
+### Camera opener
+
+`TOOLJET_DEALER_CAMERA_VIEWER_URL` defaults to unset. To enable the camera
+handshake, set it to the complete HTTPS URL of the dealer viewer page on the
+canonical `TOOLJET_HOST` origin. Include the server mount path if configured.
+For example, use `https://tooljet.example.test/applications/dealership/dealer-admission`.
+Use the page URL without a trailing slash, query string or fragment. Invitation
+links can still carry query parameters and fragments.
+
+An exact GET for this viewer receives `same-origin-allow-popups` so the Fury
+camera can communicate with its opener. An absent or invalid setting leaves
+Helmet's default opener policy in effect.
+
 ## Separate participant session
 
 `POST /api/dealer-onboarding/participant` uses its own opaque HttpOnly cookie
