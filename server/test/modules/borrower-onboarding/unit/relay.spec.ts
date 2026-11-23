@@ -52,7 +52,8 @@ function setup() {
       stepType: string;
       label: string;
       status: string;
-      borrowerAction?: string;
+      allowedKinds?: string[];
+      documentRequirements?: { type: string; provider: string; required: boolean }[];
       formFields?: { name: string; label: string; type: string; required: boolean }[];
     }[];
   } = {
@@ -63,11 +64,16 @@ function setup() {
         stepType: 'form',
         label: 'Vehicle details',
         status: 'active',
-        borrowerAction: 'form',
         formFields: [{ name: 'registered', label: 'Registered', type: 'boolean', required: true }],
       },
       { nodeId: 'bureau', stepType: 'credit_check', label: 'Bureau', status: 'active' },
-      { nodeId: 'invoice', stepType: 'document_collection', label: 'Battery invoice', status: 'active' },
+      {
+        nodeId: 'invoice',
+        stepType: 'document_collection',
+        label: 'Battery invoice',
+        status: 'active',
+        documentRequirements: [{ type: 'invoice', provider: 'manual', required: true }],
+      },
     ],
   };
   const fetcher = jest.fn(async (_url, request) => {
@@ -149,6 +155,49 @@ it('keeps all auth and application authority server side across the full relay',
       .every(({ headers }) => !headers['api-secret'] && /^authorization=.+; device=/.test(headers.cookie))
   ).toBe(true);
   expect(requests[4].variables).toEqual({ referral_token: referralToken });
+  const flowRead = requests.find(({ query }) => query.includes('applicationFlow'));
+  expect(flowRead.query).toMatch(/steps\s*\{\s*nodeId stepType status label formFields/);
+  expect(flowRead.query).not.toContain('borrowerAction');
+});
+
+it('offers DigiLocker only for the active KYC node, and refreshes the step before submission', async () => {
+  const { call, fetcher, flow } = setup();
+  const kyc = {
+    nodeId: 'primary-identity-check',
+    stepType: 'document_collection',
+    label: 'KYC',
+    status: 'active',
+    allowedKinds: ['DIGILOCKER'],
+    documentRequirements: [{ type: 'pan', provider: 'digilocker', required: true }],
+  };
+  const invoice = flow.steps.find(({ nodeId }) => nodeId === 'invoice')!;
+  invoice.status = 'pending';
+  flow.steps.unshift(kyc);
+
+  await call('entry', {}, { referralToken });
+  await call('requestOtp', { phone: '9000000001' });
+  await expect(call('verifyOtp', { otp: '123456' })).resolves.toMatchObject({
+    journey: {
+      actions: [{ nodeId: kyc.nodeId, label: 'Verify identity with DigiLocker' }, { nodeId: 'vehicle' }],
+    },
+  });
+
+  await call('step', { nodeId: kyc.nodeId, values: {} });
+  kyc.status = 'completed';
+  invoice.status = 'active';
+  await expect(call('step', { nodeId: kyc.nodeId, values: {} })).rejects.toMatchObject({ status: 409 });
+  await expect(call('step', { nodeId: 'invoice', values: {} })).rejects.toMatchObject({ status: 409 });
+  const submissions = fetcher.mock.calls
+    .map(([, request]) => JSON.parse(request.body))
+    .filter(({ query }) => query.includes('executeFlowStep'));
+  expect(submissions.map(({ variables }) => variables)).toEqual([
+    {
+      application_id: 701,
+      type: 'KYC',
+      kind: 'DIGILOCKER',
+      data: { nodeId: kyc.nodeId, redirectUrl: origin + '/applications/example/documentation' },
+    },
+  ]);
 });
 
 it('returns the scoped bank statement request and clears it from a subsequent server read', async () => {
@@ -158,7 +207,7 @@ it('returns the scoped bank statement request and clears it from a subsequent se
     stepType: 'bank_statement',
     label: 'Bank statements',
     status: 'active',
-    borrowerAction: 'account_aggregator',
+    allowedKinds: ['AA'],
   };
   const documentRequest = {
     stepId: 'bank',
@@ -197,7 +246,7 @@ it('withholds document requests for the wrong step, unsupported documents and in
     stepType: 'bank_statement',
     label: 'Bank statements',
     status: 'active',
-    borrowerAction: 'account_aggregator',
+    allowedKinds: ['AA'],
   });
   await call('entry', {}, { referralToken });
   await call('requestOtp', { phone: '9000000001' });
@@ -352,13 +401,13 @@ it('serializes concurrent provider actions and withholds unapproved redirect des
 
 it('supports explicit PAN and bank consent without reading or logging the persisted PAN', async () => {
   const { call, fetcher, flow } = setup();
-  flow.steps.push({ nodeId: 'pan', stepType: 'kyc_pan', label: 'PAN', status: 'active', borrowerAction: 'pan' });
+  flow.steps.push({ nodeId: 'pan', stepType: 'kyc_pan', label: 'PAN', status: 'active', allowedKinds: ['PAN'] });
   flow.steps.push({
     nodeId: 'bank',
     stepType: 'bank_statement',
     label: 'Bank',
     status: 'active',
-    borrowerAction: 'account_aggregator',
+    allowedKinds: ['AA'],
   });
   flow.steps.push({ nodeId: 'aadhaar', stepType: 'kyc_aadhaar', label: 'Aadhaar', status: 'active' });
   await call('entry', {}, { referralToken });

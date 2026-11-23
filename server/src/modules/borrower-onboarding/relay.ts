@@ -22,7 +22,8 @@ const documents = {
   }`,
   applicationFlow: `query BorrowerFlow($application_id: Int!) {
     applicationFlow(application_id: $application_id) {
-      productId steps { nodeId stepType status label formFields borrowerAction }
+      productId
+      steps { nodeId stepType status label formFields allowedKinds documentRequirements { type provider } }
       documentRequest { stepId reason requiredDocuments }
     }
   }`,
@@ -35,23 +36,21 @@ const documents = {
 };
 
 const controls = {
-  pan: { stepType: 'kyc_pan', type: 'KYC', kind: 'PAN', label: 'Save PAN' },
-  digilocker: {
-    stepType: 'document_collection',
+  kyc_pan: { type: 'KYC', kind: 'PAN', label: 'Save PAN' },
+  document_collection: {
     type: 'KYC',
     kind: 'DIGILOCKER',
     label: 'Verify identity with DigiLocker',
   },
-  account_aggregator: {
-    stepType: 'bank_statement',
+  bank_statement: {
     type: 'BANK_STATEMENT',
     kind: 'AA',
     label: 'Give bank-statement consent',
   },
-  form: { stepType: 'form', type: 'FORM', kind: 'FORM', label: 'Save details' },
-  digio_agreement: { stepType: 'agreement', type: 'AGREEMENT', kind: 'DIGIO', label: 'Review agreement' },
+  form: { type: 'FORM', kind: 'FORM', label: 'Save details' },
+  agreement: { type: 'AGREEMENT', kind: 'DIGIO', label: 'Review agreement' },
 } as const;
-const browserSteps = new Set(['kyc_aadhaar', ...Object.values(controls).map(({ stepType }) => String(stepType))]);
+const browserSteps = new Set(['kyc_aadhaar', ...Object.keys(controls)]);
 const fieldTypes = ['text', 'textarea', 'email', 'phone', 'money', 'integer', 'date', 'select', 'boolean'];
 
 type Config = ApplicantScope & {
@@ -67,7 +66,7 @@ type State = {
   phone?: string;
   auth?: { token: string; applicationId?: number };
 };
-type Action = Omit<(typeof controls)[keyof typeof controls], 'stepType'> & {
+type Action = (typeof controls)[keyof typeof controls] & {
   nodeId: string;
   fields?: { name: string; label: string; type: string; required: boolean; options?: string[] }[];
 };
@@ -267,12 +266,16 @@ export class BorrowerOnboarding {
       const { nodeId, stepType, status } = step;
       seen.add(nodeId);
       let available = false;
-      if (
-        status === 'active' &&
-        typeof step.borrowerAction === 'string' &&
-        Object.prototype.hasOwnProperty.call(controls, step.borrowerAction)
-      ) {
-        const { stepType: expected, ...control } = controls[step.borrowerAction as keyof typeof controls];
+      if (status === 'active' && Object.prototype.hasOwnProperty.call(controls, stepType)) {
+        const control = controls[stepType as keyof typeof controls];
+        const kinds = step.allowedKinds;
+        const explicitKind = Array.isArray(kinds) && kinds.includes(control.kind);
+        const kindAllowed = explicitKind || (kinds == null && stepType !== 'kyc_pan' && stepType !== 'bank_statement');
+        const docs = step.documentRequirements;
+        const digilocker =
+          Array.isArray(docs) &&
+          docs.length > 0 &&
+          docs.every((doc) => doc?.provider === 'digilocker' && ['pan', 'aadhaar'].includes(doc.type));
         const fields =
           stepType === 'form'
             ? formFields(step.formFields)
@@ -280,11 +283,12 @@ export class BorrowerOnboarding {
               ? [{ name: 'value', label: 'PAN', type: 'text', required: true }]
               : undefined;
         if (
-          expected === stepType &&
-          ((stepType === 'form' && fields) ||
-            (stepType !== 'form' &&
-              upstreamSteps.filter((candidate) => candidate?.status === 'active' && candidate?.stepType === stepType)
-                .length === 1))
+          kindAllowed &&
+          (stepType === 'form'
+            ? fields
+            : stepType === 'document_collection'
+              ? digilocker
+              : upstreamSteps.filter((candidate) => candidate?.stepType === stepType).length === 1)
         ) {
           available = true;
           actions.push({ ...control, nodeId, ...(fields && { fields }) });
@@ -334,6 +338,8 @@ export class BorrowerOnboarding {
     if (action.type === 'BANK_STATEMENT') {
       if (!state.phone) return rejected(409);
       data = { ...data, mobile: state.phone };
+    } else if (action.kind === 'DIGILOCKER') {
+      data = { ...data, nodeId: action.nodeId };
     } else if (action.kind === 'PAN') {
       const value = typeof selected.values.value === 'string' ? selected.values.value.trim().toUpperCase() : '';
       if (!/^[A-Z]{3}[ABCFGHLJPT][A-Z][0-9]{4}[A-Z]$/.test(value)) return rejected(400);
