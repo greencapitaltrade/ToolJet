@@ -232,6 +232,51 @@ it('offers DigiLocker only for the active KYC node, and refreshes the step befor
   ]);
 });
 
+it('offers pending DigiLocker and manual evidence on the same configured node', async () => {
+  const { call, fetcher, flow } = setup();
+  const node = flow.steps.find(({ nodeId }) => nodeId === 'invoice')!;
+  const identity = { type: 'aadhaar', provider: 'digilocker', required: true, status: 'pending' };
+  node.allowedKinds = ['DIGILOCKER'];
+  node.documentRequirements!.push(identity);
+
+  await call('entry', {}, { referralToken });
+  await call('requestOtp', { phone: '9000000001' });
+  await expect(call('verifyOtp', { otp: '123456' })).resolves.toMatchObject({
+    journey: {
+      actions: [{ nodeId: 'vehicle' }, { nodeId: 'invoice', label: 'Verify identity with DigiLocker' }],
+      documentUploads: [{ nodeId: 'invoice', documents: [{ code: 'invoice', required: true }] }],
+    },
+  });
+
+  await call('step', { nodeId: 'invoice', values: {} });
+  const submissions = () =>
+    fetcher.mock.calls
+      .map(([, request]) => JSON.parse(request.body))
+      .filter(({ query }) => query.includes('executeFlowStep'));
+  expect(submissions().map(({ variables }) => variables)).toEqual([
+    {
+      application_id: 701,
+      type: 'KYC',
+      kind: 'DIGILOCKER',
+      data: { nodeId: 'invoice', redirectUrl: origin + '/applications/example/documentation' },
+    },
+  ]);
+
+  identity.status = 'collected';
+  await expect(call('status')).resolves.toMatchObject({
+    journey: {
+      actions: [{ nodeId: 'vehicle' }],
+      documentUploads: [{ nodeId: 'invoice', documents: [{ code: 'invoice', required: true }] }],
+    },
+  });
+  await expect(call('step', { nodeId: 'invoice', values: {} })).rejects.toMatchObject({ status: 409 });
+
+  identity.status = 'pending';
+  node.allowedKinds = ['PAN'];
+  await expect(call('step', { nodeId: 'invoice', values: {} })).rejects.toMatchObject({ status: 409 });
+  expect(submissions()).toHaveLength(1);
+});
+
 it('returns the scoped bank statement request and clears it from a subsequent server read', async () => {
   const { call, fetcher, flow, getCookie, service } = setup();
   const bank = {

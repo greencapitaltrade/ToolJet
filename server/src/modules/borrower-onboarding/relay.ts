@@ -294,10 +294,14 @@ export class BorrowerOnboarding {
           available = true;
           documentUploads.push({ nodeId, documents: pendingManual });
         }
+        const identityDocs = Array.isArray(docs) ? docs.filter((doc) => doc?.provider === 'digilocker') : [];
         const digilocker =
           Array.isArray(docs) &&
-          docs.length > 0 &&
-          docs.every((doc) => doc?.provider === 'digilocker' && ['pan', 'aadhaar'].includes(doc.type));
+          identityDocs.length > 0 &&
+          identityDocs.every((doc) => ['pan', 'aadhaar'].includes(doc.type)) &&
+          (identityDocs.length === docs.length ||
+            (docs.every((doc) => doc?.provider === 'digilocker' || doc?.provider === 'manual') &&
+              identityDocs.some((doc) => doc.status === 'pending')));
         const fields =
           stepType === 'form'
             ? formFields(step.formFields)
