@@ -7,7 +7,8 @@ import { SessionUtilService } from '@modules/session/util.service';
 describe('SessionUtilService configured OIDC actor', () => {
   const workspaceId = '6b5aa378-072f-4022-977e-0066545ee3c6';
   const issuer = 'https://accounts.example.test/oidc';
-  const actor = { issuer, sub: '123' };
+  const clientId = 'test-client';
+  const actor = { issuer, sub: '123', clientId };
   const user = { id: 'tooljet-user', sessionId: 'tooljet-session', organizationId: workspaceId };
   const service = Object.create(SessionUtilService.prototype) as SessionUtilService;
   const manager = { findOne: jest.fn() };
@@ -18,7 +19,7 @@ describe('SessionUtilService configured OIDC actor', () => {
       TOOLJET_EDITION: 'ce',
       TOOLJET_HOST: 'https://tools.example.test',
       TOOLJET_OIDC_ISSUER: issuer,
-      TOOLJET_OIDC_CLIENT_ID: 'test-client',
+      TOOLJET_OIDC_CLIENT_ID: clientId,
       TOOLJET_OIDC_CLIENT_SECRET: 'test-only',
       TOOLJET_OIDC_WORKSPACE_ID: workspaceId,
     });
@@ -49,11 +50,14 @@ describe('SessionUtilService configured OIDC actor', () => {
     expect(manager.findOne).not.toHaveBeenCalled();
   });
 
-  it.each([null, {}, { oidcIdentity: { issuer: 'https://wrong.example.test', sub: actor.sub } }])(
-    'rejects a missing, ordinary, or unrecognized issuer session',
-    async (session) => {
-      manager.findOne.mockResolvedValue(session);
-      await expect(service.getOidcActor(user)).rejects.toThrow(UnauthorizedException);
-    }
-  );
+  it.each([
+    null,
+    {},
+    { oidcIdentity: { ...actor, issuer: 'https://wrong.example.test' } },
+    { oidcIdentity: { ...actor, clientId: 'previous-client' } },
+    { oidcIdentity: { issuer, sub: actor.sub } },
+  ])('rejects a session without the configured issuer and client', async (session) => {
+    manager.findOne.mockResolvedValue(session);
+    await expect(service.getOidcActor(user)).rejects.toThrow(UnauthorizedException);
+  });
 });
