@@ -6,6 +6,7 @@ import { getMcpOAuthPublicConfig } from './mcp-oauth-public-config';
 import { InMemoryCacheService } from '@modules/inMemoryCache/in-memory-cache.service';
 import { getConfiguredOidcSettings } from '@modules/auth/oauth/configured-oidc.config';
 import { BORROWER_ONBOARDING_ENV } from '@modules/borrower-onboarding/relay';
+import { DEALER_ONBOARDING_ENV } from '@modules/dealer-onboarding/relay';
 
 // Instance-wide (not per-user/per-org) settings + env vars. Concurrent calls (the bootstrap burst on
 // page load) share one lookup, which is dropped as soon as it settles: a setting saved through the API,
@@ -107,7 +108,7 @@ export class ConfigService implements IConfigService {
   private fetchAllowedConfigFromEnv() {
     const whitelistedConfigVars = process.env.ALLOWED_CLIENT_CONFIG_VARS.split(',')
       .map((envVar) => envVar.trim())
-      .filter((envVar) => envVar !== BORROWER_ONBOARDING_ENV);
+      .filter((envVar) => ![BORROWER_ONBOARDING_ENV, DEALER_ONBOARDING_ENV].includes(envVar));
 
     return whitelistedConfigVars;
   }

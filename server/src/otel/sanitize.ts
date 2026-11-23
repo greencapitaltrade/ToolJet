@@ -28,21 +28,21 @@ export function sanitizeOAuthUrl(value: unknown): unknown {
   }
 }
 
-export function isBorrowerOnboardingRequest(url: unknown): boolean {
-  return typeof url === 'string' && /\/api\/borrower-onboarding(?:[/?]|$)/i.test(url);
+export function isApplicantOnboardingRequest(url: unknown): boolean {
+  return typeof url === 'string' && /\/api\/(?:borrower|dealer)-onboarding(?:[/?]|$)/i.test(url);
 }
 
 export function sanitizeOAuthRequest(request: any): any {
   const url = sanitizeOAuthUrl(request.url);
   const oauth = typeof request.url === 'string' && request.url.includes('/mcp-oauth/');
-  const borrower = isBorrowerOnboardingRequest(request.url);
+  const applicant = isApplicantOnboardingRequest(request.url);
   return {
     ...request,
     url,
     ...(request.query ? { query: oauth ? '[REDACTED]' : sanitizeTraceObject(request.query) } : {}),
     ...(request.params && oauth ? { params: '[REDACTED]' } : {}),
-    ...(request.body ? { body: borrower ? '[REDACTED]' : sanitizeTraceObject(request.body) } : {}),
-    ...(borrower && request.rawBody ? { rawBody: '[REDACTED]' } : {}),
+    ...(request.body ? { body: applicant ? '[REDACTED]' : sanitizeTraceObject(request.body) } : {}),
+    ...(applicant && request.rawBody ? { rawBody: '[REDACTED]' } : {}),
     ...(request.headers ? { headers: { ...request.headers, referer: sanitizeOAuthUrl(request.headers.referer) } } : {}),
   };
 }
