@@ -30,3 +30,7 @@ the shared short-lived applicant store.
   Fury before an action or binary upload. No owner, signer, version or provider
   URL comes from the browser. The owner and participant routes share the
   bounded JPEG parser.
+- Owner signing uses the current completion version, the verified owner
+  session, and the matching dealer participant configuration's exact HTTPS
+  signing origin. Keep the provider link out of session storage and return
+  it only on an explicit own-sign action.

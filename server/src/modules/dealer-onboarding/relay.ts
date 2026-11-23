@@ -8,6 +8,7 @@ import {
 } from '../applicant-session/fury';
 import { ApplicantRedis, ApplicantSessions, newApplicantHandle } from '../applicant-session/store';
 import { dealerDossierInput, requestDealerDossier } from './dossier';
+import { dealerProviderRedirect, parseDealerParticipantConfig } from './participant';
 import { dealerSelfieData } from './selfie';
 
 export const DEALER_ONBOARDING_ENV = 'TOOLJET_DEALER_ONBOARDING';
@@ -21,6 +22,7 @@ const entityFieldNames = ['premises', 'cin', 'llpin'];
 const guestTtl = 600;
 type Payload = Record<string, unknown>;
 type Fields = Record<string, string>;
+type DealerScope = ApplicantScope & { signingOrigin?: string };
 type State = {
   referral: string;
   device: string;
@@ -58,6 +60,7 @@ const completionOperations = {
   verifyBank: 'VERIFY_BANK',
   freezeAgreement: 'FREEZE',
   refreshSignatures: 'REFRESH',
+  signOwnerAgreement: 'SIGN',
   submitForReview: 'SUBMIT',
 } as const;
 const completionStages = {
@@ -105,7 +108,7 @@ const docs = {
     field: 'dealerOwnerCompletion',
     query: `mutation DealerOwnerCompletion($referralToken: String!, $draftId: ID!, $action: DealerOwnerCompletionAction!, $version: Int) {
       dealerOwnerCompletion(referralToken: $referralToken, draftId: $draftId, action: $action, version: $version) {
-        stage version actions
+        stage version actions signingUrl
       }
     }`,
   },
@@ -121,10 +124,21 @@ function object(value: unknown): value is Payload {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
-export function parseDealerOnboardingConfig(value: string | undefined): ApplicantScope | null {
+export function parseDealerOnboardingConfig(
+  value: string | undefined,
+  participant?: ReturnType<typeof parseDealerParticipantConfig>
+): DealerScope | null {
   try {
     const raw = JSON.parse(value ?? 'null');
-    return object(raw) && Object.keys(raw).length === 4 ? applicantScope(raw) : null;
+    const scope = object(raw) && Object.keys(raw).length === 4 ? applicantScope(raw) : null;
+    if (
+      scope &&
+      participant?.origin === scope.origin &&
+      participant.organizationId === scope.organizationId &&
+      participant.furyUrl === scope.furyUrl
+    )
+      return { ...scope, signingOrigin: participant.signingOrigin };
+    return scope;
   } catch {
     return null;
   }
@@ -300,7 +314,7 @@ function draftView(value: unknown, expectedId?: string) {
   };
 }
 
-function completionView(value: unknown) {
+function completionView(value: unknown, signingOrigin?: string) {
   if (
     !object(value) ||
     typeof value.stage !== 'string' ||
@@ -313,15 +327,20 @@ function completionView(value: unknown) {
     return rejectApplicant(503);
   const stage = value.stage as keyof typeof completionStages;
   const allowed = completionStages[stage];
+  const ownSign = stage === 'signing_pending' && value.actions[1] === 'SIGN';
   if (
     allowed
-      ? value.actions.length !== 1 || value.actions[0] !== completionOperations[allowed]
+      ? value.actions.length !== (ownSign ? 2 : 1) || value.actions[0] !== completionOperations[allowed]
       : value.actions.length !== 0
   )
     return rejectApplicant(503);
   return {
     version: value.version,
-    view: { state: 'dealerCompletion' as const, stage, actions: allowed ? [allowed] : [] },
+    view: {
+      state: 'dealerCompletion' as const,
+      stage,
+      actions: [...(allowed ? [allowed] : []), ...(ownSign && signingOrigin ? ['signOwnerAgreement'] : [])],
+    },
   };
 }
 
@@ -369,19 +388,27 @@ export class DealerOnboarding {
     return this.lookup(scope, state, key, state.pan);
   }
 
-  private async completion(scope: ApplicantScope, state: State, operation: CompletionOperation) {
+  private async completion(scope: DealerScope, state: State, operation: CompletionOperation) {
     if (!state.draftId || !state.phone) return rejectApplicant(409);
     await this.sessions.rate(scope, 'owner-completion', state.phone, 20, 60);
     const subject = { referralToken: state.referral, draftId: state.draftId };
     const current = completionView(
-      await this.fury.request(scope, docs.completion, { ...subject, action: 'STATUS' }, state)
+      await this.fury.request(scope, docs.completion, { ...subject, action: 'STATUS' }, state),
+      scope.signingOrigin
     );
     const action = completionOperations[operation];
     if (action === 'STATUS') return current.view;
     if (!current.view.actions.some((allowed) => allowed === operation)) return rejectApplicant(409);
-    return completionView(
-      await this.fury.request(scope, docs.completion, { ...subject, action, version: current.version }, state)
-    ).view;
+    const result = await this.fury.request(
+      scope,
+      docs.completion,
+      { ...subject, action, version: current.version },
+      state
+    );
+    const { view } = completionView(result, scope.signingOrigin);
+    if (action !== 'SIGN') return view;
+    if (view.stage !== 'signing_pending' || !view.actions.includes(operation)) return rejectApplicant(503);
+    return { ...view, signingUrl: dealerProviderRedirect(result.signingUrl, scope.signingOrigin) };
   }
 
   async dossier(scope: ApplicantScope, body: unknown, id: string | undefined) {
@@ -531,7 +558,7 @@ export class DealerOnboarding {
     });
   }
 
-  async run(scope: ApplicantScope | null, input: unknown, id: string | undefined, setCookie: SetCookie) {
+  async run(scope: DealerScope | null, input: unknown, id: string | undefined, setCookie: SetCookie) {
     if (!scope) return rejectApplicant(404);
     const command = operation(input);
     const key = this.sessions.key(scope, id);
