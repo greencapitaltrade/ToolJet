@@ -14,6 +14,19 @@ immutable dealer policy with `dealer_referral_required: true`. A link is never
 an identity grant. After OTP, the server holds the verified Fury session and
 checks every case using the referral and verified user.
 
+### Dealer owner dossier
+
+The dedicated `POST /api/dealer-onboarding/dossier` form route uses the
+same-origin verified dealer session. It accepts `STATUS` or one current form
+action with the displayed draft version. The relay supplies the draft and signed
+referral from the existing session and obtains the current form state from
+Destiny before writing. Results include the current version and available forms.
+Write values go directly from the native form to this route and remain outside
+ToolJet queries, tracing and applicant session storage.
+
+The `FURY_DEALER_OWNER_DOSSIER_ENABLED` and
+`DESTINY_DEALER_OWNER_DOSSIER_ENABLED` flags default off.
+
 | Operation | Input | Result |
 | --- | --- | --- |
 | `entry` | v2 `referralToken` and empty `fields` | `invite` or `phone` |

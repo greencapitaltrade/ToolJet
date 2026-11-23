@@ -6,6 +6,7 @@ import {
   rejectApplicant,
 } from '../applicant-session/fury';
 import { ApplicantRedis, ApplicantSessions, newApplicantHandle } from '../applicant-session/store';
+import { dealerDossierInput, requestDealerDossier } from './dossier';
 
 export const DEALER_ONBOARDING_ENV = 'TOOLJET_DEALER_ONBOARDING';
 const tokenPattern = /^v2[.][A-Za-z0-9_-]{39,1021}$/;
@@ -365,6 +366,23 @@ export class DealerOnboarding {
     return completionView(
       await this.fury.request(scope, docs.completion, { ...subject, action, version: current.version }, state)
     ).view;
+  }
+
+  async dossier(scope: ApplicantScope, body: unknown, id: string | undefined) {
+    const input = dealerDossierInput(body);
+    const key = this.sessions.key(scope, id);
+    if (!key) return rejectApplicant(409);
+    return this.sessions.withLock(key, async () => {
+      const state = await this.sessions.get(key);
+      if (!state?.auth || !state.phone || !state.draftId) return rejectApplicant(409);
+      await this.sessions.rate(scope, 'owner-dossier', state.phone, 20, 60);
+      return requestDealerDossier(
+        scope,
+        { referralToken: state.referral, draftId: state.draftId, device: state.device, token: state.auth.token },
+        input,
+        this.fetcher
+      );
+    });
   }
 
   async upload(scope: ApplicantScope, read: () => Promise<unknown>, id: string | undefined) {
