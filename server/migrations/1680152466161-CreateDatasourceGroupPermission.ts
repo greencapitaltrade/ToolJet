@@ -2,6 +2,11 @@ import { MigrationInterface, QueryRunner, Table, TableForeignKey } from 'typeorm
 
 export class CreateDatasourceGroupPermission1680152466161 implements MigrationInterface {
   public async up(queryRunner: QueryRunner): Promise<void> {
+    // Some CE releases retired the legacy permission tables before shipping this migration.
+    if (await this.legacyPermissionsWereRetired(queryRunner)) {
+      return;
+    }
+
     await queryRunner.createTable(
       new Table({
         name: 'data_source_group_permissions',
@@ -80,6 +85,19 @@ export class CreateDatasourceGroupPermission1680152466161 implements MigrationIn
   }
 
   public async down(queryRunner: QueryRunner): Promise<void> {
-    await queryRunner.dropTable('data_source_group_permissions');
+    const retired = await this.legacyPermissionsWereRetired(queryRunner);
+    await queryRunner.dropTable('data_source_group_permissions', retired);
+  }
+
+  private async legacyPermissionsWereRetired(queryRunner: QueryRunner): Promise<boolean> {
+    if ((await queryRunner.hasTable('group_permissions')) || !(await queryRunner.hasTable('permission_groups'))) {
+      return false;
+    }
+
+    const [{ retired }] = (await queryRunner.query(
+      'SELECT EXISTS (SELECT 1 FROM "migrations" WHERE "name" = $1) AS "retired"',
+      ['DropGroupPermissionsOlderRelatedTables1720513124281']
+    )) as { retired: boolean }[];
+    return retired;
   }
 }
