@@ -4,7 +4,7 @@ import { sanitizeOAuthRequest } from '../../../../src/otel/sanitize';
 import { ApplicantSessions } from '../../../../src/modules/applicant-session/store';
 
 const origin = 'https://app.example.test';
-const referralToken = 'v2.' + 'a'.repeat(60);
+const referralToken = 'v3.' + 'a'.repeat(60);
 const config = parseBorrowerOnboardingConfig(
   JSON.stringify({
     origin,
@@ -46,6 +46,7 @@ function setup() {
   };
   const flow: {
     productId: number;
+    documentRequest?: unknown;
     steps: {
       nodeId: string;
       stepType: string;
@@ -111,6 +112,10 @@ function makeToken(device: string, phone: string, org = '39') {
 
 it('keeps all auth and application authority server side across the full relay', async () => {
   const { call, fetcher, getCookie, service } = setup();
+  await expect(call('entry', {}, { referralToken: 'v2.' + referralToken.slice(3) })).rejects.toMatchObject({
+    status: 400,
+  });
+  expect(fetcher).not.toHaveBeenCalled();
   await expect(call('entry', {}, { referralToken })).resolves.toEqual({ state: 'phone' });
   const guest = getCookie();
   await expect(call('requestOtp', { phone: '9000000001' })).resolves.toEqual({ state: 'otp' });
@@ -144,6 +149,69 @@ it('keeps all auth and application authority server side across the full relay',
       .every(({ headers }) => !headers['api-secret'] && /^authorization=.+; device=/.test(headers.cookie))
   ).toBe(true);
   expect(requests[4].variables).toEqual({ referral_token: referralToken });
+});
+
+it('returns the scoped bank statement request and clears it from a subsequent server read', async () => {
+  const { call, fetcher, flow, getCookie, service } = setup();
+  const bank = {
+    nodeId: 'bank',
+    stepType: 'bank_statement',
+    label: 'Bank statements',
+    status: 'active',
+    borrowerAction: 'account_aggregator',
+  };
+  const documentRequest = {
+    stepId: 'bank',
+    reason: 'Please provide two more months of bank statements.',
+    requiredDocuments: ['bank_statement'],
+  };
+  flow.steps.push(bank);
+  flow.documentRequest = { ...documentRequest, officerId: 'private-reviewer', caseId: 999 };
+
+  await call('entry', {}, { referralToken });
+  const guest = getCookie();
+  await call('requestOtp', { phone: '9000000001' });
+  const first = await call('verifyOtp', { otp: '123456' });
+  expect(first).toMatchObject({ journey: { id: 701, documentRequest } });
+  expect(JSON.stringify(first)).not.toMatch(/private-reviewer|caseId/);
+  const requests = fetcher.mock.calls.map(([, req]) => JSON.parse(req.body));
+  const flowRead = requests.find(({ query }) => query.includes('applicationFlow'));
+  expect(flowRead.query).toMatch(/documentRequest\s*\{\s*stepId\s+reason\s+requiredDocuments\s*\}/);
+  expect(flowRead.variables).toEqual({ application_id: 701 });
+
+  await expect(service.run(config, { operation: 'status', fields: {} }, guest, jest.fn())).resolves.toEqual({
+    state: 'invite',
+  });
+  await expect(call('status', { application_id: 999 })).rejects.toMatchObject({ status: 400 });
+
+  bank.status = 'completed';
+  flow.documentRequest = null;
+  const next = await call('status');
+  expect(next).not.toHaveProperty('journey.documentRequest');
+});
+
+it('withholds document requests for the wrong step, unsupported documents and invalid reasons', async () => {
+  const { call, flow } = setup();
+  flow.steps.push({
+    nodeId: 'bank',
+    stepType: 'bank_statement',
+    label: 'Bank statements',
+    status: 'active',
+    borrowerAction: 'account_aggregator',
+  });
+  await call('entry', {}, { referralToken });
+  await call('requestOtp', { phone: '9000000001' });
+  await call('verifyOtp', { otp: '123456' });
+  const request = { stepId: 'bank', reason: 'Recent statements', requiredDocuments: ['bank_statement'] };
+  for (const invalid of [
+    { ...request, stepId: 'vehicle' },
+    { ...request, stepId: 'foreign-bank' },
+    { ...request, requiredDocuments: ['arbitrary_upload'] },
+    { ...request, reason: 'x'.repeat(501) },
+  ]) {
+    flow.documentRequest = invalid;
+    expect(await call('status')).not.toHaveProperty('journey.documentRequest');
+  }
 });
 
 it('rejects cross-provider selectors, unavailable steps and added form fields', async () => {

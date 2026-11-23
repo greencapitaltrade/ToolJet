@@ -76,7 +76,7 @@ it('issues only an opaque host-only session cookie on an eligible exact-origin e
   const { invoke } = fixture();
   const { response, done } = invoke(
     { origin, 'sec-fetch-site': 'same-origin', 'content-type': 'application/json' },
-    { referralToken: 'v2.' + 'a'.repeat(60) }
+    { referralToken: 'v3.' + 'a'.repeat(60) }
   );
   await done;
   expect(response.cookie).toHaveBeenCalledWith(
