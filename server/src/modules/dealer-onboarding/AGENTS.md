@@ -6,6 +6,8 @@ the shared short-lived applicant store.
 
 - The upload route authenticates, locks and rate limits the applicant session
   before parsing the bounded multipart body.
+- PAN lookup and creation send the signed referral from Redis. Once bound,
+  status reads and updates use the stored draft ID and verified session.
 - Document requirements and case version come from the verified scoped case.
   The browser supplies one allowed document code and its evidence. It never
   supplies a case identifier, version, tenant, storage reference or signer.

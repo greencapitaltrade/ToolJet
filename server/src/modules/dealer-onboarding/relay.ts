@@ -8,7 +8,7 @@ import {
 import { ApplicantRedis, ApplicantSessions, newApplicantHandle } from '../applicant-session/store';
 
 export const DEALER_ONBOARDING_ENV = 'TOOLJET_DEALER_ONBOARDING';
-const tokenPattern = /^v2[.][A-Za-z0-9_-]{39,1021}$/;
+const tokenPattern = /^v3[.][A-Za-z0-9_-]{39,1021}$/;
 const panPattern = /^[A-Z]{3}[CFP][A-Z][0-9]{4}[A-Z]$/;
 const gstPattern = /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z][0-9A-Z]Z[0-9A-Z]$/;
 const uuidPattern = /^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/;
@@ -54,10 +54,16 @@ const docs = {
     dealerIntakeStart(referral_token: $referral_token, input: $input) { ${draftSelection} }
   }`,
   },
+  status: {
+    field: 'dealerIntakeStatus',
+    query: `mutation DealerStatus($draftId: ID!) {
+    dealerIntakeStatus(draftId: $draftId) { ${draftSelection} }
+  }`,
+  },
   entity: {
     field: 'dealerEntityDetailsSave',
-    query: `mutation DealerEntity($referral_token: String!, $pan: String!, $fields: DealerEntityDetailsInput!) {
-      dealerEntityDetailsSave(referral_token: $referral_token, pan: $pan, fields: $fields) { ${draftSelection} }
+    query: `mutation DealerEntity($draftId: ID!, $fields: DealerEntityDetailsInput!) {
+      dealerEntityDetailsSave(draftId: $draftId, fields: $fields) { ${draftSelection} }
     }`,
   },
 };
@@ -244,17 +250,17 @@ export class DealerOnboarding {
   }
 
   private async lookup(scope: ApplicantScope, state: State, key: string, pan: string) {
+    if (state.draftId) {
+      const result = await this.fury.request(scope, docs.status, { draftId: state.draftId }, state);
+      return draftView(result, state.draftId);
+    }
     const result = await this.fury.request(scope, docs.lookup, { referral_token: state.referral, pan }, state);
     if (result.status === 'resume') {
-      const view = draftView(result.draft, state.draftId);
-      if (!state.draftId) await this.sessions.save(key, { ...state, pan, draftId: view.draft.id });
+      const view = draftView(result.draft);
+      await this.sessions.save(key, { ...state, pan, draftId: view.draft.id });
       return view;
     }
-    if (
-      state.draftId ||
-      result.status !== 'new' ||
-      result.category !== { C: 'company', F: 'firm', P: 'proprietorship' }[pan[3]]
-    )
+    if (result.status !== 'new' || result.category !== { C: 'company', F: 'firm', P: 'proprietorship' }[pan[3]])
       return rejectApplicant(503);
     if (pan !== state.pan) await this.sessions.save(key, { ...state, pan });
     return { state: 'details' as const, category: result.category };
@@ -295,8 +301,7 @@ export class DealerOnboarding {
       body.append(
         'metadata',
         JSON.stringify({
-          referral_token: state.referral,
-          pan: state.pan,
+          draft_id: state.draftId,
           version: current.draft.version,
           code,
           ...(location !== undefined ? { location } : {}),
@@ -383,8 +388,7 @@ export class DealerOnboarding {
             scope,
             docs.entity,
             {
-              referral_token: state.referral,
-              pan: state.pan,
+              draftId: state.draftId,
               fields: command.fields,
             },
             state

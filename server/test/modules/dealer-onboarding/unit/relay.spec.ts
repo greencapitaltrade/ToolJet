@@ -10,7 +10,7 @@ const config = parseDealerOnboardingConfig(
     lspSecret: 'synthetic-service-credential',
   })
 );
-const referralToken = `v2.${'a'.repeat(45)}`;
+const referralToken = `v3.${'a'.repeat(45)}`;
 const draft = {
   id: '67528714-825d-4801-b011-099e4dbe50de',
   status: 'in_progress',
@@ -83,6 +83,10 @@ function setup() {
             : { status: 'new', category: 'firm' },
         },
       });
+    if (query.includes('dealerIntakeStatus'))
+      return Response.json({
+        data: { dealerIntakeStatus: { ...draft, entityFields, documentActions: evidence, version: 3 } },
+      });
     if (query.includes('dealerEntityDetailsSave'))
       return Response.json({ data: { dealerEntityDetailsSave: { ...draft, entityFields } } });
     if (!query.includes('dealerIntakeStart')) throw new Error('Unsupported operation');
@@ -133,7 +137,9 @@ it('verifies the invite and OTP, saves PAN server-side, creates under the invite
     referral_token: referralToken,
     input: { ...details, pan: 'AAAFA1234A' },
   });
-  for (const call of requests.filter((r) => /dealerPanLookup|dealerIntakeStart/.test(r.query))) {
+  expect(requests.find((r) => r.query.includes('dealerIntakeStatus')).variables).toEqual({ draftId: draft.id });
+  expect(requests.filter((r) => r.query.includes('dealerPanLookup'))).toHaveLength(1);
+  for (const call of requests.filter((r) => /dealerPanLookup|dealerIntakeStart|dealerIntakeStatus/.test(r.query))) {
     expect(call.headers['api-secret']).toBeUndefined();
     expect(call.headers.cookie).toMatch(/^authorization=header\..+; device=/);
   }
@@ -184,8 +190,7 @@ it('exposes and executes only the currently available server-selected entity act
     .filter((x) => x.query.includes('dealerEntityDetailsSave'));
   expect(writes).toHaveLength(1);
   expect(writes[0].variables).toEqual({
-    referral_token: referralToken,
-    pan: 'AAAFA1234A',
+    draftId: draft.id,
     fields: { premises: 'owned', llpin: 'ABC-1234' },
   });
 });
@@ -233,8 +238,7 @@ it('attaches only projected evidence under the verified cookie and server-select
   expect(JSON.parse(options.body.get('metadata'))).toEqual({
     code: bank.code,
     version: 3,
-    pan: 'AAAFA1234A',
-    referral_token: referralToken,
+    draft_id: draft.id,
   });
   expect(await options.body.get('file').text()).toBe(pdf.toString());
 });

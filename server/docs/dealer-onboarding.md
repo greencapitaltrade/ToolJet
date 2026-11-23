@@ -1,7 +1,7 @@
 # Dealer applicant admission
 
 `POST /api/dealer-onboarding` is the same-origin route for a new dealer to use
-their v2 link and existing mobile verification. It shares the applicant HTTP,
+their v3 link and existing mobile verification. It shares the applicant HTTP,
 Fury and Redis session controls with borrower onboarding. The legacy ToolJet
 dealer app remains private and continues to use its native forms.
 
@@ -11,12 +11,13 @@ authenticated `organizationId`, fixed HTTPS `furyUrl` ending in `/v2/graphql`,
 and pre-authorized `lspSecret`. Keep the secret exclusively server-side. The
 pre-OTP check uses the exact Fury-workload-only Destiny endpoint and a selected
 immutable dealer policy with `dealer_referral_required: true`. A link is never
-an identity grant. After OTP, the server holds the verified Fury session and
-checks every case using the referral and verified user.
+an identity grant. After OTP, the server uses the verified Fury session and the
+referral to bind an owned intake to the opaque session. Subsequent requests use
+the bound intake and the same verified Fury session.
 
 | Operation | Input | Result |
 | --- | --- | --- |
-| `entry` | v2 `referralToken` and empty `fields` | `invite` or `phone` |
+| `entry` | v3 `referralToken` and empty `fields` | `invite` or `phone` |
 | `requestOtp` | `fields.phone` | `otp` |
 | `verifyOtp` | `fields.otp` | `pan` and rotated opaque session cookie |
 | `lookup` | `fields.pan` | new business category or the applicant’s existing draft |
