@@ -15,8 +15,8 @@ const operations = new Map([
   ['partners', readFields],
   ['borrowerApplications', readFields],
   ['borrowerDpd', readFields],
-  ['dealerLink', []],
-  ['borrowerLink', []],
+  ['dealerLink', ['partnerId']],
+  ['borrowerLink', ['partnerId']],
   ['feeStatus', ['dealerId']],
   ['feeCheckout', ['dealerId']],
 ]);

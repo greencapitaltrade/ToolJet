@@ -99,6 +99,8 @@ describe('partner operator workspace relay', () => {
     { operation: 'partners', partnerId: '1/path' },
     { operation: 'borrowerApplications', partnerId: '9223372036854775808' },
     { operation: 'dealerLink', organizationId: '7' },
+    { operation: 'dealerLink', partnerId: '11', after: '1' },
+    { operation: 'borrowerLink', partnerId: '9223372036854775808' },
     { operation: 'feeStatus' },
     { operation: 'session', route: '/private' },
     { operation: 'authorize' },
@@ -106,6 +108,15 @@ describe('partner operator workspace relay', () => {
   ])('rejects unexpected operation parameters before forwarding', async (body) => {
     expect((await relay(body)).status).toBe(400);
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(['dealerLink', 'borrowerLink'])('forwards a validated selector for %s to Destiny', async (operation) => {
+    const body = { operation, partnerId: '11' };
+    expect((await relay(body)).status).toBe(200);
+    expect(fetch).toHaveBeenCalledWith(
+      upstream + '/v1/channel-partners/operator',
+      expect.objectContaining({ body: JSON.stringify(body) })
+    );
   });
 
   it('rejects missing, invalid and foreign OIDC sessions', async () => {
