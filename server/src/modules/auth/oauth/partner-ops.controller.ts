@@ -150,7 +150,7 @@ export class PartnerOpsController {
         redirect: 'error',
         headers: {
           'Content-Type': 'application/json',
-          'x-gct-user-id': thorUser.sub,
+          'x-gct-user-id': actor.sub,
           'x-gct-org-id': thorUser.organization_id,
         },
         body: JSON.stringify(input),
