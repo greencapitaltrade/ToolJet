@@ -97,7 +97,15 @@ describe('DataQueriesUtilService.runQuery — isPublic/appName resolution', () =
     const response = { setHeader: jest.fn() } as unknown as Response;
 
     await expect(
-      service.runQuery(user, query, { '{{parameters.recordId}}': '123/different-route' }, response, undefined, 'view', app)
+      service.runQuery(
+        user,
+        query,
+        { '{{parameters.recordId}}': '123/different-route' },
+        response,
+        undefined,
+        'view',
+        app
+      )
     ).rejects.toMatchObject({ data: { status: 400 } });
     expect(getOidcActor).not.toHaveBeenCalled();
     expect(runMock).not.toHaveBeenCalled();

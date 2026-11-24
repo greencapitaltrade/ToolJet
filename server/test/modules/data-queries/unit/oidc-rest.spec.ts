@@ -2,7 +2,11 @@ import { SessionUtilService } from '@modules/session/util.service';
 import { AbilityService } from '@modules/ability/interfaces/IService';
 import { MODULES } from '@modules/app/constants/modules';
 import { User } from '@entities/user.entity';
-import { assertCanUseOidcRestSource, getOidcRestSourceOrigin, prepareOidcRestQuery } from '@modules/data-queries/oidc-rest';
+import {
+  assertCanUseOidcRestSource,
+  getOidcRestSourceOrigin,
+  prepareOidcRestQuery,
+} from '@modules/data-queries/oidc-rest';
 
 /** @group platform */
 describe('Native REST queries with verified OIDC identity', () => {
@@ -64,7 +68,9 @@ describe('Native REST queries with verified OIDC identity', () => {
     const persistedSource = { id, kind: 'restapi' } as const;
     const grant = (usableDataSourcesId: string[]) => ({ [MODULES.GLOBAL_DATA_SOURCE]: { usableDataSourcesId } });
     resourceActionsPermission.mockResolvedValue(grant(['another-source']));
-    await expect(assertCanUseOidcRestSource(currentUser, persistedSource, ability)).rejects.toMatchObject({ status: 403 });
+    await expect(assertCanUseOidcRestSource(currentUser, persistedSource, ability)).rejects.toMatchObject({
+      status: 403,
+    });
 
     resourceActionsPermission.mockResolvedValue(grant([id]));
     await expect(assertCanUseOidcRestSource(currentUser, persistedSource, ability)).resolves.toBeUndefined();

@@ -26,7 +26,8 @@ const protectedHeaders = new Set([
   'x-gct-user-id',
   'x-gct-org-id',
 ]);
-const configuredSourceError = () => new QueryError('Unable to use the configured REST connection.', '', { status: 503 });
+const configuredSourceError = () =>
+  new QueryError('Unable to use the configured REST connection.', '', { status: 503 });
 const restMethods = new Set(['get', 'head', 'post', 'put', 'patch', 'delete', 'options']);
 
 /** Returns an origin selected by the instance administrator from the persisted connection ID. */
