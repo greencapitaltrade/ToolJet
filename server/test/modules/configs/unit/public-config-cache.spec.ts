@@ -43,15 +43,16 @@ describe('ConfigService.public_config cache', () => {
     await expect(service.public_config()).resolves.toMatchObject({ ENABLE_COMMENTS: 'true' });
   });
 
-  it('keeps applicant relay credentials private even if mistakenly allowlisted', async () => {
+  it('keeps onboarding and credit review credentials private even if mistakenly allowlisted', async () => {
     const original = process.env;
     process.env = {
       ...original,
       ALLOWED_CLIENT_CONFIG_VARS:
-        'LANGUAGE, TOOLJET_BORROWER_ONBOARDING, TOOLJET_DEALER_ONBOARDING, TOOLJET_DEALER_PARTICIPANT',
+        'LANGUAGE, TOOLJET_BORROWER_ONBOARDING, TOOLJET_DEALER_ONBOARDING, TOOLJET_DEALER_PARTICIPANT, TOOLJET_CREDIT_REVIEW_SIGNING_KEY',
       TOOLJET_BORROWER_ONBOARDING: '{"lspSecret":"synthetic-private-secret"}',
       TOOLJET_DEALER_ONBOARDING: '{"lspSecret":"synthetic-other-private-secret"}',
       TOOLJET_DEALER_PARTICIPANT: '{"lspSecret":"synthetic-participant-secret"}',
+      TOOLJET_CREDIT_REVIEW_SIGNING_KEY: 'synthetic-test-signing-key',
       LANGUAGE: 'en',
     };
     try {
@@ -60,6 +61,7 @@ describe('ConfigService.public_config cache', () => {
       expect(config).not.toHaveProperty('TOOLJET_BORROWER_ONBOARDING');
       expect(config).not.toHaveProperty('TOOLJET_DEALER_ONBOARDING');
       expect(config).not.toHaveProperty('TOOLJET_DEALER_PARTICIPANT');
+      expect(config).not.toHaveProperty('TOOLJET_CREDIT_REVIEW_SIGNING_KEY');
     } finally {
       process.env = original;
     }

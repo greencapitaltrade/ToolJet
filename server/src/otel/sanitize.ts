@@ -1,5 +1,5 @@
 const CREDENTIAL_KEYS =
-  /^(?:password|current_password|new_password|token|access_token|refresh_token|subject_token|actor_token|id_token|client_secret|code|code_verifier|code_challenge|state|ticket|bootstrap|nonce|clientSecret|csrfToken|secret|authorization|cookie|tj_oauth_viewer|x-tooljet-delegation|x-tooljet-oauth-csrf|onboarding|referralToken|referral_token|otp|api-secret)$/i;
+  /^(?:password|current_password|new_password|token|access_token|refresh_token|subject_token|actor_token|id_token|client_secret|code|code_verifier|code_challenge|state|ticket|bootstrap|nonce|clientSecret|csrfToken|secret|authorization|cookie|tj_oauth_viewer|x-tooljet-delegation|x-tooljet-oauth-csrf|x-gct-credit-review-proof|TOOLJET_CREDIT_REVIEW_SIGNING_KEY|onboarding|referralToken|referral_token|otp|api-secret)$/i;
 
 /** Keep credential-bearing OAuth requests out of trace attributes. */
 export function sanitizeTraceObject(value: any): any {
@@ -18,7 +18,9 @@ export function sanitizeOAuthUrl(value: unknown): unknown {
   try {
     const url = new URL(value, 'http://telemetry.invalid');
     const oauthPath =
-      /\/(?:mcp-oauth|mcp\/consent)(?:\/|$)/.test(url.pathname) || isConfiguredOidcRequest(url.pathname);
+      /\/(?:mcp-oauth|mcp\/consent)(?:\/|$)/.test(url.pathname) ||
+      isConfiguredOidcRequest(url.pathname) ||
+      isCreditReviewRequest(url.pathname);
     const oauthReturn = /(?:mcp(?:%2f|\/)consent)/i.test(url.search);
     const secretQuery = [...url.searchParams.keys()].some((key) => CREDENTIAL_KEYS.test(key));
     if (!oauthPath && !oauthReturn && !secretQuery) return value;
@@ -37,9 +39,13 @@ export function isApplicantOnboardingRequest(url: unknown): boolean {
   return typeof url === 'string' && /\/api\/(?:borrower|dealer)-onboarding(?:[/?]|$)/i.test(url);
 }
 
+export function isCreditReviewRequest(url: unknown): boolean {
+  return typeof url === 'string' && /\/api\/credit-review\/?$/i.test(url.split(/[?#]/, 1)[0]);
+}
+
 export function sanitizeOAuthRequest(request: any): any {
   const url = sanitizeOAuthUrl(request.url);
-  if (isConfiguredOidcRequest(request.url)) {
+  if (isConfiguredOidcRequest(request.url) || isCreditReviewRequest(request.url)) {
     return { id: request.id, method: request.method, url };
   }
 

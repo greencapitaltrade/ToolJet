@@ -1,6 +1,7 @@
 import { ExecutionContext } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { PartnerOpsController, PartnerOpsGuard } from '@modules/auth/oauth/partner-ops.controller';
+import { JwtAuthGuard } from '@modules/session/guards/jwt-auth.guard';
 import type { SessionUtilService } from '@modules/session/util.service';
 
 const issuer = 'https://issuer.example.test/oidc';
@@ -57,9 +58,7 @@ afterEach(() => jest.restoreAllMocks());
 describe('partner operator workspace relay', () => {
   it('requires a native browser session and pins the configured workspace before authenticating', async () => {
     const guard = new PartnerOpsGuard();
-    const passport = jest
-      .spyOn(Object.getPrototypeOf(PartnerOpsGuard.prototype), 'canActivate')
-      .mockResolvedValue(true);
+    const passport = jest.spyOn(JwtAuthGuard.prototype, 'canActivate').mockResolvedValue(true);
     const native = request({ 'tj-workspace-id': 'untrusted' });
     await expect(guard.canActivate(ctx(native))).resolves.toBe(true);
     expect(passport).toHaveBeenCalledTimes(1);

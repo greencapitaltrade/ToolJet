@@ -53,6 +53,7 @@ recorded in `User.source` (`SOURCE` enum, `@modules/users/constants/lifecycle.ts
 - OIDC PKCE: code verifier rides the `oidc_code_verifier` cookie; token-exchange `redirect_uri` host must match the authorization request (custom-domain aware).
 - Configured CE OIDC stores a one-time PKCE challenge in `sso_responses` and an issuer/subject stamp on the native session. See `server/docs/configured-oidc.md`.
 - Partner operations resolve the verified session subject in Thor server-side and forward its user and organization IDs to Destiny's standard partner routes through the existing workload-authenticated mesh. See `server/docs/configured-oidc.md`.
+- `oauth/configured-oidc-workspace.ts` shares the native workspace cookie guard and registered Thor actor lookup with the credit review relay. Each relay checks its own resource authorization separately.
 - Partner operation IDs and cursors are decimal strings at the browser boundary. Destiny can return safe integers, which the relay converts to strings. Fee actions check the scoped partner detail and resolve the same pending dealer's draft ID through the partner directory.
 - Registering with `isMainImport=false` yields providers but no controllers — prevents duplicate route mounting when other modules import AuthModule.
 

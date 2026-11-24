@@ -1,6 +1,7 @@
 import {
   isApplicantOnboardingRequest,
   isConfiguredOidcRequest,
+  isCreditReviewRequest,
   sanitizeTraceObject as sanitizeObject,
 } from './sanitize';
 import { CompositePropagator, W3CTraceContextPropagator, W3CBaggagePropagator } from '@opentelemetry/core';
@@ -92,6 +93,7 @@ function createSDK(): NodeSDK {
             url.includes('/api/health') ||
             url.includes('/api/mcp-oauth/') ||
             isApplicantOnboardingRequest(url) ||
+            isCreditReviewRequest(url) ||
             isConfiguredOidcRequest(url)
           );
         },
@@ -102,6 +104,7 @@ function createSDK(): NodeSDK {
           if (
             path.includes('/mcp-oauth/') ||
             isApplicantOnboardingRequest(request.originalUrl || path) ||
+            isCreditReviewRequest(request.originalUrl || path) ||
             isConfiguredOidcRequest(request.originalUrl || path)
           ) {
             return;

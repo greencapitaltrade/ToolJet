@@ -1,14 +1,20 @@
 import { Body, Controller, type ExecutionContext, Header, Injectable, Post, Req, Res, UseGuards } from '@nestjs/common';
-import type { Request, Response } from 'express';
+import type { Response } from 'express';
 import { privateServiceOrigin } from '../../../helpers/private-service-origin';
 import { MODULES } from '@modules/app/constants/modules';
 import { InitFeature } from '@modules/app/decorators/init-feature.decorator';
 import { InitModule } from '@modules/app/decorators/init-module';
-import { JwtAuthGuard } from '@modules/session/guards/jwt-auth.guard';
 import { SessionUtilService } from '@modules/session/util.service';
 import { FeatureAbilityGuard } from '../ability/guard';
 import { FEATURE_KEY } from '../constants';
 import { getConfiguredOidcSettings, isHttpsUrl } from './configured-oidc.config';
+import {
+  ConfiguredOidcWorkspaceGuard,
+  type OidcWorkspaceRequest,
+  positiveId,
+  resolveThorActor,
+  ThorActorError,
+} from './configured-oidc-workspace';
 
 const readFields = ['partnerId', 'after'];
 const operations = new Map([
@@ -42,17 +48,9 @@ function settings() {
   return {
     issuer: oidc.issuer,
     clientId: oidc.clientId,
-    origin: oidc.origin,
-    workspaceId: oidc.workspaceId,
     destinyOrigin,
     thorOrigin,
   };
-}
-
-function positiveId(value: unknown): value is string {
-  return (
-    typeof value === 'string' && /^[1-9]\d{0,18}$/.test(value) && (value.length < 19 || value <= '9223372036854775807')
-  );
 }
 
 function isDraftId(value: unknown): value is string {
@@ -104,29 +102,10 @@ function destinyId(value: unknown): string {
   return id;
 }
 
-type ViewerRequest = Request & { user: Parameters<SessionUtilService['getOidcActor']>[0] };
-
 @Injectable()
-export class PartnerOpsGuard extends JwtAuthGuard {
+export class PartnerOpsGuard extends ConfiguredOidcWorkspaceGuard {
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const config = settings();
-    const request: Request = context.switchToHttp().getRequest();
-    if (
-      !config ||
-      request.headers.origin !== config.origin ||
-      request.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/json' ||
-      typeof request.cookies?.tj_auth_token !== 'string' ||
-      !request.cookies.tj_auth_token ||
-      request.cookies.tj_oauth_viewer ||
-      request.headers.tj_auth_token ||
-      request.headers['x-tooljet-delegation'] ||
-      request.headers['tj-admin-api-key']
-    ) {
-      return false;
-    }
-    // Use the native JWT guard's active workspace membership check with the configured workspace.
-    request.headers['tj-workspace-id'] = config.workspaceId;
-    return (await super.canActivate(context)) === true;
+    return Boolean(settings()) && (await super.canActivate(context));
   }
 }
 
@@ -139,35 +118,21 @@ export class PartnerOpsController {
   @Post()
   @Header('Cache-Control', 'no-store')
   @InitFeature(FEATURE_KEY.PARTNER_OPS)
-  async relay(@Req() request: ViewerRequest, @Body() body: unknown, @Res() response: Response) {
+  async relay(@Req() request: OidcWorkspaceRequest, @Body() body: unknown, @Res() response: Response) {
     const fail = (status: number) => response.status(status).json({ error: errors.get(status) });
     const config = settings();
     if (!config) return fail(404);
     const input = validatedOperation(body);
     if (!input) return fail(400);
-    const actor = await this.sessions.getOidcActor(request.user).catch(() => null);
-    if (actor?.issuer !== config.issuer || actor.clientId !== config.clientId || !positiveId(actor.sub)) {
-      return fail(401);
-    }
-
     try {
-      const identity = await fetch(new URL(`/v1/users/oidc-subject/${actor.sub}`, config.thorOrigin).href, {
-        method: 'GET',
-        redirect: 'error',
-        headers: { 'x-gct-oidc-issuer': actor.issuer, 'x-gct-oidc-client-id': actor.clientId },
-        signal: AbortSignal.timeout(5_000),
-      });
-      if (!identity.ok) return fail(identity.status === 404 ? 401 : 503);
-      const thorUser: { sub?: unknown; organization_id?: unknown } | null = await identity.json();
-      if (thorUser?.sub !== actor.sub || !positiveId(thorUser.organization_id)) return fail(503);
-      const organizationId = thorUser.organization_id;
+      const { userId, organizationId } = await resolveThorActor(this.sessions, request.user, config);
 
       const forward = async <T>(path: string, payload?: object): Promise<T> => {
         const upstream = await fetch(new URL(path, config.destinyOrigin).href, {
           method: payload ? 'POST' : 'GET',
           redirect: 'error',
           headers: {
-            'x-gct-user-id': actor.sub,
+            'x-gct-user-id': userId,
             'x-gct-org-id': organizationId,
             ...(payload && { 'Content-Type': 'application/json' }),
           },
@@ -333,7 +298,7 @@ export class PartnerOpsController {
       }
       return response.status(200).json({ data });
     } catch (error) {
-      return fail(error instanceof UpstreamError ? error.status : 503);
+      return fail(error instanceof UpstreamError || error instanceof ThorActorError ? error.status : 503);
     }
   }
 }

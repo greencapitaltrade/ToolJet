@@ -20,3 +20,9 @@ For a same-origin application relay, set `tj-workspace-id` to the server-configu
 The `POST /api/partner-ops` relay uses the configured workspace's native cookie and the verified identity from that session. Set `TOOLJET_PARTNER_OPS_THOR_ORIGIN` and `TOOLJET_PARTNER_OPS_UPSTREAM_ORIGIN` to the internal Kubernetes service origins for Thor and Destiny. The relay accepts JSON from the configured ToolJet origin and authenticates against the configured workspace.
 
 ToolJet resolves the verified subject against Thor on every operation. It forwards the resulting `x-gct-user-id` and `x-gct-org-id` to Destiny over the existing authenticated service transport. Destiny checks current membership and resource scope through its standard partner APIs. The app relay maps record selectors to the partner directory, applications, DPD, referrals, and draft fee routes.
+
+## Credit review relay
+
+The review app's saved query can send queue, case, and action requests to `POST /api/credit-review`. Set `TOOLJET_CREDIT_REVIEW_APP_ID` to the private front-end app UUID in the configured workspace. The app needs a released version. Each request requires a same-origin native workspace cookie and the standard app viewer permission.
+
+Use the same private Thor and Destiny origins as partner operations. Set the server-only `TOOLJET_CREDIT_REVIEW_SIGNING_KEY` to the base64-encoded DER PKCS#8 Ed25519 private key matching Destiny's configured review authority public key. ToolJet signs the verified Thor user, organization, queue or case, action inputs, and short expiry. Destiny applies its own review grants. The signing key does not reach the browser.
