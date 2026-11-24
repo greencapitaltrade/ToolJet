@@ -60,6 +60,7 @@ describe('DataQueriesUtilService.runQuery — isPublic/appName resolution', () =
     const dataQuery = {
       dataSource: { id: 'ds-1', kind: 'other', pluginId: 'plugin-1', options: {} },
       appVersion: { isPublic: false, appName: 'New Name', branchId: null },
+      options: {},
     } as any;
     const response = { cookie: jest.fn(), setHeader: jest.fn() } as any;
 
