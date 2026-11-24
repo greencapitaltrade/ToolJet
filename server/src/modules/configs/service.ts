@@ -9,6 +9,7 @@ import { BORROWER_ONBOARDING_ENV } from '@modules/borrower-onboarding/relay';
 import { DEALER_ONBOARDING_ENV } from '@modules/dealer-onboarding/relay';
 import { DEALER_PARTICIPANT_ENV } from '@modules/dealer-onboarding/participant';
 import { CREDIT_REVIEW_SIGNING_KEY_ENV } from '@modules/data-queries/credit-review.config';
+import { FINANCE_ENV } from '@modules/data-queries/finance.config';
 
 // Instance-wide (not per-user/per-org) settings + env vars. Concurrent calls (the bootstrap burst on
 // page load) share one lookup, which is dropped as soon as it settles: a setting saved through the API,
@@ -117,6 +118,7 @@ export class ConfigService implements IConfigService {
             DEALER_ONBOARDING_ENV,
             DEALER_PARTICIPANT_ENV,
             CREDIT_REVIEW_SIGNING_KEY_ENV,
+            ...Object.values(FINANCE_ENV),
           ].includes(envVar)
       );
 

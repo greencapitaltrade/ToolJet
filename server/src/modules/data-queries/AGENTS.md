@@ -18,7 +18,9 @@ the right plugin, per-Environment credentials, and `{{ }}` templates before invo
 |---|---|
 | `module.ts` | `register()` per SubModule pattern; per-(user, app) run throttling via `ThrottlerModule` (`DATA_QUERY_RUN_TTL`/`DATA_QUERY_RUN_LIMIT`, default 50/s, single-pod counters); exports `DataQueriesUtilService` |
 | `controller.ts` | CRUD + `POST :id/versions/:versionId/run/:environmentId` (RUN_EDITOR), `POST :id/run` (RUN_VIEWER, `QueryAuthGuard` allows unauthenticated on public apps + `AppScopedThrottlerGuard`), preview, list-tables, change data source |
-| `credit-review.controller.ts` | Signs a fixed Destiny review request only after checking the native OIDC workspace cookie and `RUN_VIEWER` on the configured private released review app |
+| `pinned-oidc-app.guard.ts` | Pins a private released app in the native OIDC workspace for the staff relays before their separate `RUN_VIEWER` guards run |
+| `credit-review.controller.ts` | Signs fixed Destiny review requests for the registered Thor actor |
+| `finance.controller.ts` | Relays the organization queue and whole-batch CSV export to Ironman with separate action credentials and canonical Thor actor headers |
 | `service.ts` | CRUD orchestration; `runQueryOnBuilder`/`runQueryForApp`/`preview` → `runAndGetResult` (wraps `QueryError` into `{status: 'failed'}`); `before/afterQuery*` hooks are CE no-ops for EE App History |
 | `util.service.ts` | `runQuery` core: env option resolution, `parseQueryOptions` template resolution (`{{constants.}}`/`{{secrets.}}`/`{{globals.server.}}` via `resolveConstants`), OAuth refresh + `needs_oauth` flow, `query_timeout` abort, REST cookie/XFF forwarding, audit-log locals |
 | `repository.ts` | `getAll`, `getAllWithPermissions`, `getOneById`, `getQueriesByVersionId`, `createOne`, `deleteDataQueryEvents`, `findPublicParentAppForModuleQuery` |

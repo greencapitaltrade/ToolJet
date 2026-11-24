@@ -43,16 +43,20 @@ describe('ConfigService.public_config cache', () => {
     await expect(service.public_config()).resolves.toMatchObject({ ENABLE_COMMENTS: 'true' });
   });
 
-  it('keeps onboarding and credit review credentials private even if mistakenly allowlisted', async () => {
+  it('keeps onboarding, credit review and finance credentials private even if mistakenly allowlisted', async () => {
     const original = process.env;
     process.env = {
       ...original,
       ALLOWED_CLIENT_CONFIG_VARS:
-        'LANGUAGE, TOOLJET_BORROWER_ONBOARDING, TOOLJET_DEALER_ONBOARDING, TOOLJET_DEALER_PARTICIPANT, TOOLJET_CREDIT_REVIEW_SIGNING_KEY',
+        'LANGUAGE, TOOLJET_BORROWER_ONBOARDING, TOOLJET_DEALER_ONBOARDING, TOOLJET_DEALER_PARTICIPANT, TOOLJET_CREDIT_REVIEW_SIGNING_KEY, TOOLJET_FINANCE_APP_ID, TOOLJET_FINANCE_IRONMAN_ORIGIN, TOOLJET_FINANCE_READ_KEY, TOOLJET_FINANCE_CSV_KEY',
       TOOLJET_BORROWER_ONBOARDING: '{"lspSecret":"synthetic-private-secret"}',
       TOOLJET_DEALER_ONBOARDING: '{"lspSecret":"synthetic-other-private-secret"}',
       TOOLJET_DEALER_PARTICIPANT: '{"lspSecret":"synthetic-participant-secret"}',
       TOOLJET_CREDIT_REVIEW_SIGNING_KEY: 'synthetic-test-signing-key',
+      TOOLJET_FINANCE_APP_ID: 'fixture-private-app',
+      TOOLJET_FINANCE_IRONMAN_ORIGIN: 'http://private-service',
+      TOOLJET_FINANCE_READ_KEY: 'synthetic-read-key',
+      TOOLJET_FINANCE_CSV_KEY: 'synthetic-csv-key',
       LANGUAGE: 'en',
     };
     try {
@@ -62,6 +66,10 @@ describe('ConfigService.public_config cache', () => {
       expect(config).not.toHaveProperty('TOOLJET_DEALER_ONBOARDING');
       expect(config).not.toHaveProperty('TOOLJET_DEALER_PARTICIPANT');
       expect(config).not.toHaveProperty('TOOLJET_CREDIT_REVIEW_SIGNING_KEY');
+      expect(config).not.toHaveProperty('TOOLJET_FINANCE_APP_ID');
+      expect(config).not.toHaveProperty('TOOLJET_FINANCE_IRONMAN_ORIGIN');
+      expect(config).not.toHaveProperty('TOOLJET_FINANCE_READ_KEY');
+      expect(config).not.toHaveProperty('TOOLJET_FINANCE_CSV_KEY');
     } finally {
       process.env = original;
     }

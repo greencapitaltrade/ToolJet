@@ -1,26 +1,22 @@
 import { createPrivateKey, sign } from 'node:crypto';
-import { Body, Controller, Header, Injectable, Post, Req, Res, UseGuards, type ExecutionContext } from '@nestjs/common';
-import { isUUID } from 'class-validator';
+import { Body, Controller, Header, Injectable, Post, Req, Res, UseGuards } from '@nestjs/common';
 import type { Response } from 'express';
 import { privateServiceOrigin } from '@helpers/private-service-origin';
 import { MODULES } from '@modules/app/constants/modules';
 import { InitFeature } from '@modules/app/decorators/init-feature.decorator';
 import { InitModule } from '@modules/app/decorators/init-module';
-import { APP_TYPES } from '@modules/apps/constants';
-import { AppsRepository } from '@modules/apps/repository';
 import { getConfiguredOidcSettings } from '@modules/auth/oauth/configured-oidc.config';
 import {
-  ConfiguredOidcWorkspaceGuard,
   type OidcWorkspaceRequest,
   positiveId,
   resolveThorActor,
   ThorActorError,
 } from '@modules/auth/oauth/configured-oidc-workspace';
 import { SessionUtilService } from '@modules/session/util.service';
-import { VersionRepository } from '@modules/versions/repository';
 import { FeatureAbilityGuard } from './ability/app/guard';
 import { FEATURE_KEY } from './constants';
 import { CREDIT_REVIEW_SIGNING_KEY_ENV } from './credit-review.config';
+import { PinnedOidcAppGuard } from './pinned-oidc-app.guard';
 import { AppScopedThrottlerGuard } from './throttler/app-scoped-throttler.guard';
 
 const errors = new Map([
@@ -118,44 +114,9 @@ function reviewRequest(body: unknown) {
 }
 
 @Injectable()
-export class CreditReviewGuard extends ConfiguredOidcWorkspaceGuard {
-  constructor(
-    private readonly apps: AppsRepository,
-    private readonly versions: VersionRepository
-  ) {
-    super();
-  }
-
-  async canActivate(context: ExecutionContext): Promise<boolean> {
-    const id = process.env.TOOLJET_CREDIT_REVIEW_APP_ID;
-    if (!id || !isUUID(id) || !(await super.canActivate(context))) return false;
-    const request = context
-      .switchToHttp()
-      .getRequest<OidcWorkspaceRequest & { tj_app?: unknown; tj_resource_id?: string }>();
-    const workspaceId = getConfiguredOidcSettings()?.workspaceId;
-    if (!workspaceId || request.user?.organizationId !== workspaceId) return false;
-
-    // Pin the resource independently of the caller and before the native RUN_VIEWER guard.
-    const app = await this.apps.findById(id, workspaceId);
-    if (
-      app?.id !== id ||
-      app.organizationId !== workspaceId ||
-      app.type !== APP_TYPES.FRONT_END ||
-      app.isPublic !== false ||
-      app.isMaintenanceOn ||
-      !app.currentVersionId
-    ) {
-      return false;
-    }
-    const published = await this.versions.findOne({
-      where: { id: app.currentVersionId, appId: id },
-      select: { isPublic: true, isStub: true },
-    });
-    if (published?.isPublic !== false || published.isStub !== false) return false;
-
-    request.tj_app = app;
-    request.tj_resource_id = app.id;
-    return true;
+export class CreditReviewGuard extends PinnedOidcAppGuard {
+  protected get appId() {
+    return process.env.TOOLJET_CREDIT_REVIEW_APP_ID;
   }
 }
 

@@ -1,0 +1,6 @@
+export const FINANCE_ENV = {
+  appId: 'TOOLJET_FINANCE_APP_ID',
+  origin: 'TOOLJET_FINANCE_IRONMAN_ORIGIN',
+  readKey: 'TOOLJET_FINANCE_READ_KEY',
+  csvKey: 'TOOLJET_FINANCE_CSV_KEY',
+} as const;

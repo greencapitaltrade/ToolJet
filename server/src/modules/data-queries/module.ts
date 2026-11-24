@@ -18,6 +18,7 @@ import { DataQueryFolderMappingRepository } from '@modules/data-query-folders/re
 import { AppScopedThrottlerGuard } from './throttler/app-scoped-throttler.guard';
 import { SessionModule } from '@modules/session/module';
 import { CreditReviewController, CreditReviewGuard } from './credit-review.controller';
+import { FinanceAppGuard, FinanceController } from './finance.controller';
 
 function parsePositiveInt(raw: unknown, fallback: number): number {
   if (raw === undefined || raw === null || raw === '') return fallback;
@@ -73,10 +74,11 @@ export class DataQueriesModule extends SubModule {
         DataQueryFolderMappingRepository,
         AppScopedThrottlerGuard,
         CreditReviewGuard,
+        FinanceAppGuard,
         GitSyncQueryEditGuard,
       ],
       exports: [DataQueriesUtilService],
-      controllers: isMainImport ? [DataQueriesController, CreditReviewController] : [],
+      controllers: isMainImport ? [DataQueriesController, CreditReviewController, FinanceController] : [],
     });
   }
 }
