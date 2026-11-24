@@ -1,6 +1,5 @@
 /** @group platform */
 import { Test, TestingModule } from '@nestjs/testing';
-import { StaffRelayService } from '../../../../src/modules/data-queries/staff-relay.service';
 import { DataQueriesUtilService } from '../../../../src/modules/data-queries/util.service';
 import { ConfigService } from '@nestjs/config';
 import { VersionRepository } from '../../../../src/modules/versions/repository';
@@ -23,7 +22,6 @@ describe('DataQueriesUtilService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         DataQueriesUtilService,
-        { provide: StaffRelayService, useValue: { run: jest.fn() } },
         {
           provide: ConfigService,
           useValue: {
@@ -57,6 +55,10 @@ describe('DataQueriesUtilService', () => {
 
     service = module.get<DataQueriesUtilService>(DataQueriesUtilService);
     dataSourceUtilService = module.get<DataSourcesUtilService>(DataSourcesUtilService);
+  });
+
+  it('can be instantiated without the staff relay provider', () => {
+    expect(service).toBeInstanceOf(DataQueriesUtilService);
   });
 
   describe('parseQueryOptions', () => {

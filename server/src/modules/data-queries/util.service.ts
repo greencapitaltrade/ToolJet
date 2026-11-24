@@ -6,7 +6,7 @@ import { dbTransactionWrap } from '@helpers/database.helper';
 import { redactSecretValues } from '@helpers/utils.helper';
 import { AppEnvironmentUtilService } from '@modules/app-environments/util.service';
 import { VersionRepository } from '@modules/versions/repository';
-import { BadRequestException, Inject, Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, Optional, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { QueryError } from '@tooljet/plugins';
 import { EntityManager } from 'typeorm';
@@ -30,8 +30,10 @@ import { StaffRelayService } from './staff-relay.service';
 
 @Injectable()
 export class DataQueriesUtilService implements IDataQueriesUtilService {
+  // DataSourcesModule also provides this utility for ordinary data source operations.
+  @Optional()
   @Inject(StaffRelayService)
-  protected readonly staffRelay: StaffRelayService;
+  protected readonly staffRelay?: StaffRelayService;
 
   constructor(
     protected readonly versionRepository: VersionRepository,
