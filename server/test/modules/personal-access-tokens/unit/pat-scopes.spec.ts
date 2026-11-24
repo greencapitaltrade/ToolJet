@@ -21,6 +21,7 @@ import { FEATURE_KEY as VERSION_FEATURE } from '@modules/versions/constants';
 import { FEATURE_KEY as PLUGIN_FEATURE } from '@modules/plugins/constants';
 import { FEATURE_KEY as APP_FEATURE } from '@modules/apps/constants';
 import { FEATURE_KEY as DATA_QUERY_FOLDER_FEATURE } from '@modules/data-query-folders/constants';
+import { FEATURE_KEY as DATA_QUERY_FEATURE } from '@modules/data-queries/constants';
 
 /**
  * Tagged `security` because CI's unit step runs only --group=working|workflows|security, and
@@ -47,6 +48,13 @@ describe('PAT scope definition', () => {
 
   it('fails closed when a route carries no module metadata', () => {
     expect(patCanAccess(undefined)).toBe(false);
+  });
+
+  it.each([
+    ['workspace', patCanAccess],
+    ['app viewer', patAppViewerCanAccess],
+  ] as const)('allows ordinary query runs in the %s scope', (_scope, canAccess) => {
+    expect(canAccess(MODULES.DATA_QUERY, DATA_QUERY_FEATURE.RUN_VIEWER)).toBe(true);
   });
 
   it('allows everything an app-building automation client calls', () => {

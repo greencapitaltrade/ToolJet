@@ -5,6 +5,7 @@ import {
   QueryError,
   QueryResult,
   QueryService,
+  type QueryContext,
   cleanSensitiveData,
   redactHeaders,
   User,
@@ -50,13 +51,21 @@ export default class RestapiQueryService implements QueryService {
     queryOptions: any,
     dataSourceId: string,
     dataSourceUpdatedAt: string,
-    context?: { user?: User; app?: App }
+    context?: QueryContext
   ): Promise<RestAPIResult> {
     const hasDataSource = dataSourceId !== undefined;
     const url = this.constructUrl(sourceOptions, queryOptions, hasDataSource);
 
-    // SSRF Protection: Validate URL before making request
-    await validateUrlForSSRF(url);
+    const trustedOrigin = context?.trustedRestOrigin;
+    if (trustedOrigin) {
+      // This origin is supplied by the server from an administrator-managed data source binding.
+      const target = new URL(url);
+      if (target.origin !== trustedOrigin || target.username || target.password || target.hash) {
+        throw new QueryError('Invalid REST connection destination.', '', { status: 400 });
+      }
+    } else {
+      await validateUrlForSSRF(url);
+    }
 
     const _requestOptions = await this.constructValidatedRequestOptions(
       context,
@@ -71,10 +80,18 @@ export default class RestapiQueryService implements QueryService {
 
     // Apply SSRF protection options (custom DNS lookup + redirect validation)
     // Pass requestOptions to properly merge hooks and other options
-    const finalOptions = getSSRFProtectionOptions(undefined, requestOptions);
+    const finalOptions = trustedOrigin
+      ? { ...requestOptions, followRedirect: false, retry: 0 }
+      : getSSRFProtectionOptions(undefined, requestOptions);
 
     try {
       const response = await got(url, finalOptions);
+      if (trustedOrigin) {
+        if (response.statusCode >= 300) {
+          throw new QueryError('The REST request failed.', '', { status: response.statusCode });
+        }
+        return { status: 'ok', data: this.getResponse(response) };
+      }
       const { result, requestObject, responseObject } = this.handleResponse(response);
 
       return {
@@ -86,6 +103,11 @@ export default class RestapiQueryService implements QueryService {
         },
       };
     } catch (error) {
+      if (trustedOrigin) {
+        if (error instanceof QueryError) throw error;
+        const status = error instanceof HTTPError ? error.response.statusCode : 503;
+        throw new QueryError('The REST request failed.', '', { status });
+      }
       throw this.handleError(error, sourceOptions);
     }
   }

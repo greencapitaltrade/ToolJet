@@ -69,4 +69,18 @@ describe('DataQueriesService.runQueryOnBuilder on the released version', () => {
     expect(dataQueryRepository.updateOne).toHaveBeenCalledWith('query-id', { options });
     expect(runAndGetResult).toHaveBeenCalledTimes(1);
   });
+
+  it('runs a released app query with its saved data source in native viewer mode', async () => {
+    const user = { id: 'user-id' } as User;
+    const response = {} as Response;
+    const resolvedOptions = { '{{parameters.id}}': 'record-id' };
+    const savedQuery = { id: 'query-id', appVersionId: RELEASED_VERSION_ID, options, dataSource };
+    dataQueryRepository.getOneById.mockResolvedValue(savedQuery);
+
+    await service.runQueryForApp(user, savedQuery.id, { resolvedOptions }, response, app);
+
+    expect(dataQueryRepository.getOneById).toHaveBeenCalledWith(savedQuery.id, { dataSource: true, appVersion: true });
+    expect(runAndGetResult).toHaveBeenCalledWith(user, savedQuery, resolvedOptions, response, undefined, 'view', app);
+    expect(dataQueryRepository.updateOne).not.toHaveBeenCalled();
+  });
 });

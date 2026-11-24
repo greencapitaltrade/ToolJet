@@ -27,7 +27,6 @@ import { EncryptionModule } from '@modules/encryption/module';
 import { CustomDomainsModule } from '@modules/custom-domains/module';
 import { ConfiguredOidcController } from './oauth/configured-oidc.controller';
 import { ConfiguredOidcService } from './oauth/configured-oidc.service';
-import { PartnerOpsController, PartnerOpsGuard } from './oauth/partner-ops.controller';
 
 @Module({})
 export class AuthModule extends SubModule {
@@ -90,14 +89,7 @@ export class AuthModule extends SubModule {
         }),
       ],
       controllers: isMainImport
-        ? [
-            AuthController,
-            OauthController,
-            ConfiguredOidcController,
-            PartnerOpsController,
-            WebsiteAuthController,
-            WebsiteOtpController,
-          ]
+        ? [AuthController, OauthController, ConfiguredOidcController, WebsiteAuthController, WebsiteOtpController]
         : [],
       providers: [
         AuthService,
@@ -109,7 +101,6 @@ export class AuthModule extends SubModule {
         AuthUtilService,
         OauthService,
         ConfiguredOidcService,
-        PartnerOpsGuard,
         SamlService,
         GitOAuthService,
         GoogleOAuthService,

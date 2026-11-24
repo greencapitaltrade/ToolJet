@@ -6,7 +6,7 @@ import { dbTransactionWrap } from '@helpers/database.helper';
 import { redactSecretValues } from '@helpers/utils.helper';
 import { AppEnvironmentUtilService } from '@modules/app-environments/util.service';
 import { VersionRepository } from '@modules/versions/repository';
-import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, Injectable, Optional, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { QueryError } from '@tooljet/plugins';
 import { EntityManager } from 'typeorm';
@@ -25,7 +25,9 @@ import { DataQueryExecutionOptions } from './interfaces/IUtilService';
 import { AbortControllerHandler } from '@helpers/abortqueryhandler.helper';
 import { AppVersion } from '@entities/app_version.entity';
 import { ListTablesDto } from './dto';
-import { DataSourceTypes, SAMPLE_SQL_DISABLED_KEY } from '@modules/data-sources/constants';
+import { DataSourceScopes, DataSourceTypes, SAMPLE_SQL_DISABLED_KEY } from '@modules/data-sources/constants';
+import { SessionUtilService } from '@modules/session/util.service';
+import { getOidcRestSourceOrigin, prepareOidcRestQuery } from './oidc-rest';
 
 @Injectable()
 export class DataQueriesUtilService implements IDataQueriesUtilService {
@@ -34,7 +36,8 @@ export class DataQueriesUtilService implements IDataQueriesUtilService {
     protected readonly configService: ConfigService,
     protected readonly appEnvironmentUtilService: AppEnvironmentUtilService,
     protected readonly dataSourceUtilService: DataSourcesUtilService,
-    protected readonly pluginsSelectorService: PluginsServiceSelector
+    protected readonly pluginsSelectorService: PluginsServiceSelector,
+    @Optional() private readonly sessions?: SessionUtilService
   ) {}
   async validateQueryActionsAgainstEnvironment(organizationId: string, appVersionId: string, errorMessage: string) {
     return dbTransactionWrap(async (manager: EntityManager) => {
@@ -134,6 +137,9 @@ export class DataQueriesUtilService implements IDataQueriesUtilService {
 
       dataSource.options = dataSourceOptions.options;
 
+      const trustedRestOrigin = dataSource.kind === 'restapi' ? getOidcRestSourceOrigin(dataSource.id) : undefined;
+      // The native parser resolves options in place. Preserve the saved route before applying request parameters.
+      const savedRestOptions = { url: dataQuery.options?.url, method: dataQuery.options?.method };
       let { sourceOptions, parsedQueryOptions, service } = await this.fetchServiceAndParsedParams(
         dataSource,
         dataQuery,
@@ -145,6 +151,28 @@ export class DataQueriesUtilService implements IDataQueriesUtilService {
         dataSourceOptions.id,
         collectedSecretValues
       );
+
+      if (trustedRestOrigin) {
+        if (
+          dataSource.type !== DataSourceTypes.DEFAULT ||
+          dataSource.scope !== DataSourceScopes.GLOBAL ||
+          dataSource.organizationId !== organizationId ||
+          dataSource.pluginId
+        ) {
+          throw new QueryError('Unable to use the configured REST connection.', '', { status: 503 });
+        }
+        const prepared = await prepareOidcRestQuery(
+          trustedRestOrigin,
+          savedRestOptions,
+          parsedQueryOptions,
+          sourceOptions,
+          user,
+          this.sessions
+        );
+        sourceOptions = prepared.sourceOptions;
+        parsedQueryOptions = prepared.queryOptions;
+        response.setHeader('Cache-Control', 'no-store');
+      }
 
       const isTooljetManagedApp = sourceOptions['oauth_type'] === 'tooljet_app';
       if (!isTooljetManagedApp) {
@@ -160,7 +188,7 @@ export class DataQueriesUtilService implements IDataQueriesUtilService {
       abortCtrl = new AbortControllerHandler(queryTimeoutMs);
       abortCtrl.start();
 
-      queryStatus.setOptions(parsedQueryOptions);
+      if (!trustedRestOrigin) queryStatus.setOptions(parsedQueryOptions);
 
       try {
         abortCtrl.throwIfAborted();
@@ -183,7 +211,7 @@ export class DataQueriesUtilService implements IDataQueriesUtilService {
           } else {
             sourceOptions['headers'].push(customXFFHeader);
           }
-          if (forwardRestCookies) {
+          if (forwardRestCookies && !trustedRestOrigin) {
             // Extract cookies from the client request
             const cookies = RequestContext?.currentContext?.req?.headers?.cookie || '';
             if (cookies) {
@@ -209,6 +237,7 @@ export class DataQueriesUtilService implements IDataQueriesUtilService {
           `${dataSource.id}-${dataSourceOptions.environmentId}`,
           dataSourceOptions.updatedAt,
           {
+            ...(trustedRestOrigin && { trustedRestOrigin }),
             user: { id: user?.id },
             app: {
               id: appToUse?.id,

@@ -8,6 +8,7 @@ import { getConfiguredOidcSettings } from '@modules/auth/oauth/configured-oidc.c
 import { BORROWER_ONBOARDING_ENV } from '@modules/borrower-onboarding/relay';
 import { DEALER_ONBOARDING_ENV } from '@modules/dealer-onboarding/relay';
 import { DEALER_PARTICIPANT_ENV } from '@modules/dealer-onboarding/participant';
+import { OIDC_REST_SOURCES_ENV, OIDC_THOR_ORIGIN_ENV } from '@modules/data-queries/oidc-rest';
 
 // Instance-wide (not per-user/per-org) settings + env vars. Concurrent calls (the bootstrap burst on
 // page load) share one lookup, which is dropped as soon as it settles: a setting saved through the API,
@@ -109,7 +110,16 @@ export class ConfigService implements IConfigService {
   private fetchAllowedConfigFromEnv() {
     const whitelistedConfigVars = process.env.ALLOWED_CLIENT_CONFIG_VARS.split(',')
       .map((envVar) => envVar.trim())
-      .filter((envVar) => ![BORROWER_ONBOARDING_ENV, DEALER_ONBOARDING_ENV, DEALER_PARTICIPANT_ENV].includes(envVar));
+      .filter(
+        (envVar) =>
+          ![
+            BORROWER_ONBOARDING_ENV,
+            DEALER_ONBOARDING_ENV,
+            DEALER_PARTICIPANT_ENV,
+            OIDC_REST_SOURCES_ENV,
+            OIDC_THOR_ORIGIN_ENV,
+          ].includes(envVar)
+      );
 
     return whitelistedConfigVars;
   }

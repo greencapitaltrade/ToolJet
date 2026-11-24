@@ -24,8 +24,6 @@ export enum FEATURE_KEY {
   OAUTH_COMMON_SIGN_IN = '/oauth/sign-in/common/:ssoType',
   OAUTH_SAML_RESPONSE = '/oauth/saml/:configId',
 
-  PARTNER_OPS = 'partnerOps',
-
   // AI Onboarding
   AI_ONBOARDING = 'aiOnboarding', // POST 'ai-onboarding'
   AI_ONBOARDING_SSO = 'aiOnboardingSSO', // POST 'sign-in/common/:ssoType

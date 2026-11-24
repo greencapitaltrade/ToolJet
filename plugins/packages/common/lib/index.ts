@@ -3,6 +3,7 @@ import { QueryResult } from './query_result.type';
 import { User } from './user.type';
 import { App } from './app.type';
 import { QueryService } from './query_service.interface';
+export type { QueryContext } from './query_service.interface';
 import {
   isEmpty,
   cacheConnection,

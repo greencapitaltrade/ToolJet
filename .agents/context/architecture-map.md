@@ -80,6 +80,8 @@ sequenceDiagram
 
 The configured partner operations relay resolves the verified workspace session subject against Thor. It forwards the resulting business user and organization IDs to the workload-restricted operator route. See [`configured-oidc.md`](../../server/docs/configured-oidc.md).
 
+The private credit review and finance relays pin their released ToolJet apps before checking native app viewer permissions. Both resolve the actor through Thor. Finance forwards the actor with a separate Ironman credential for each action, and Ironman owns organization scoping and CSV reconciliation.
+
 ### 2. Author, release, and render an app
 
 1. `frontend/src/HomePage/HomePage.jsx::createApp` calls `frontend/src/_services/apps.service.js` and `AppsController.create`.

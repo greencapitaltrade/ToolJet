@@ -19,7 +19,6 @@ export interface Features {
   [FEATURE_KEY.OAUTH_SAML_CONFIGS]: FeatureConfig;
   [FEATURE_KEY.OAUTH_SAML_RESPONSE]: FeatureConfig;
   [FEATURE_KEY.OAUTH_SIGN_IN]: FeatureConfig;
-  [FEATURE_KEY.PARTNER_OPS]: FeatureConfig;
   [FEATURE_KEY.AI_ONBOARDING]: FeatureConfig;
   [FEATURE_KEY.AI_ONBOARDING_SSO]: FeatureConfig;
   [FEATURE_KEY.AI_COOKIE_SET]: FeatureConfig;

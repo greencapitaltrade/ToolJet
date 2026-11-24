@@ -11,12 +11,14 @@ Register the callback at `<ToolJet origin>/api/oauth/oidc/callback`. For a subpa
 
 Use existing active ToolJet accounts and workspace memberships. On first sign-in, a verified provider email must match an active workspace member. ToolJet then binds the account to the issuer and subject. For a member without a verified provider email, an operator can instead verify that user's issuer subject and pre-bind the existing ToolJet user by adding a row to `configured_oidc_identities` (`issuer`, `subject`, `user_id`). Subsequent sign-ins resolve this binding. Changing the provider email leaves the identity binding intact.
 
-For a server handler guarded by `JwtAuthGuard`, `SessionUtilService.getOidcActor` accepts the authenticated `@User()` principal in the configured workspace and returns the verified `{ issuer, sub, clientId }` from a session for the current OIDC client. A session without the client ID must sign in again. The partner-operations relay sends the issuer and client ID only to Thor’s private subject lookup. Thor verifies the user's current service and organization against the client registration. Provider tokens and the actor stamp stay on the server.
+For a server handler guarded by `JwtAuthGuard`, `SessionUtilService.getOidcActor` accepts the authenticated `@User()` principal in the configured workspace and returns the verified `{ issuer, sub, clientId }` from a session for the current OIDC client. A session without the client ID must sign in again. The private subject lookup verifies the user's current service and organization against the client registration. Provider tokens and the verified actor stay on the server.
 
-For a same-origin application relay, set `tj-workspace-id` to the server-configured ToolJet workspace UUID in middleware before invoking `JwtAuthGuard`. Use the native `tj_auth_token` cookie and discard any client-supplied workspace header, `tj_auth_token` header, admin API key or delegation credential. The workspace UUID only selects the ToolJet login session.
+## Native REST connections
 
-## Partner operations relay
+Create a global REST API data source with the service's literal private origin as its base URL. Store service credentials in the data source's server-side options. Use ToolJet's existing data source permissions for people who author queries and its app grants for people who run the released app.
 
-The `POST /api/partner-ops` relay uses the configured workspace's native cookie and the verified identity from that session. Set `TOOLJET_PARTNER_OPS_THOR_ORIGIN` and `TOOLJET_PARTNER_OPS_UPSTREAM_ORIGIN` to the internal Kubernetes service origins for Thor and Destiny. The relay accepts JSON from the configured ToolJet origin and authenticates against the configured workspace.
+- Set `TOOLJET_OIDC_THOR_ORIGIN` to the private Thor service origin.
+- Set `TOOLJET_OIDC_REST_SOURCES` to a JSON object mapping each installed data source UUID to its private service origin. Both settings accept Kubernetes service origins under `.svc.cluster.local`.
+- Save each native query with a fixed HTTP method and a root-relative path. Parameters may occupy individual path segments, such as `/v1/records/{{parameters.recordId}}`. Use the query's URL parameters tab for query-string fields.
 
-ToolJet resolves the verified subject against Thor on every operation. It forwards the resulting `x-gct-user-id` and `x-gct-org-id` to Destiny over the existing authenticated service transport. Destiny checks current membership and resource scope through its standard partner APIs. The app relay maps record selectors to the partner directory, applications, DPD, referrals, and draft fee routes.
+The REST connector resolves the current Thor subject server-side and sends the canonical IDs in `x-gct-user-id` and `x-gct-org-id` to the configured origin. It returns the normal query result and accepts service responses only from that origin.

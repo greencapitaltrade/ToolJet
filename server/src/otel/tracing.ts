@@ -1,6 +1,7 @@
 import {
   isApplicantOnboardingRequest,
   isConfiguredOidcRequest,
+  isSavedQueryRun,
   sanitizeTraceObject as sanitizeObject,
 } from './sanitize';
 import { CompositePropagator, W3CTraceContextPropagator, W3CBaggagePropagator } from '@opentelemetry/core';
@@ -110,6 +111,9 @@ function createSDK(): NodeSDK {
             span.updateName(`${request.method} ${path}`);
             span.setAttribute('http.route', path);
             span.setAttribute('http.method', request.method);
+
+            // Viewer query parameters can include private operation data in serialized JSON.
+            if (isSavedQueryRun(request.originalUrl || path)) return;
 
             if (request.params && Object.keys(request.params).length > 0) {
               span.setAttribute('http.params', JSON.stringify(sanitizeObject(request.params)));

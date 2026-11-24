@@ -1,4 +1,4 @@
-import { ConflictException, ForbiddenException, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Injectable, NotFoundException, Optional } from '@nestjs/common';
 import { EntityManager, In, Not } from 'typeorm';
 import { User } from 'src/entities/user.entity';
 import { DataSource } from 'src/entities/data_source.entity';
@@ -23,6 +23,8 @@ import { QueryWrite } from '@modules/app-validation/types';
 import { GitSyncConfigsUtilService } from '@modules/git-sync-configs/util.service';
 import { assertGitSyncEditAllowedForOrg } from '@modules/git-sync-configs/guards/git-sync-edit-guard';
 import { AppVersion } from '@entities/app_version.entity';
+import { AbilityService } from '@modules/ability/interfaces/IService';
+import { assertCanUseOidcRestSource } from './oidc-rest';
 
 @Injectable()
 export class DataQueriesService implements IDataQueriesService {
@@ -31,7 +33,8 @@ export class DataQueriesService implements IDataQueriesService {
     protected readonly dataQueryUtilService: DataQueriesUtilService,
     protected readonly dataSourceRepository: DataSourcesRepository,
     protected readonly appValidationService: AppValidationService,
-    protected readonly gitSyncConfigsUtilService: GitSyncConfigsUtilService
+    protected readonly gitSyncConfigsUtilService: GitSyncConfigsUtilService,
+    @Optional() private readonly abilityService?: AbilityService
   ) {}
 
   /**
@@ -269,6 +272,7 @@ export class DataQueriesService implements IDataQueriesService {
         if (!query) {
           throw new ForbiddenException('You do not have permission to access this resource');
         }
+        await assertCanUseOidcRestSource(user, query.dataSource, this.abilityService);
         stored.push(query);
       }
 
@@ -462,6 +466,7 @@ export class DataQueriesService implements IDataQueriesService {
       const newDataSource = await this.dataSourceRepository.findOneOrFail({
         where: { id: newDataSourceId, organizationId: user.organizationId },
       });
+      await assertCanUseOidcRestSource(user, newDataSource, this.abilityService);
       // FIXME: Disabling this check as workflows can change data source of a query with different kind
       // if (dataSource.kind !== newDataSource.kind && dataSource) {
       //   throw new BadRequestException();

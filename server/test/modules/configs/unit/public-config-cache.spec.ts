@@ -43,15 +43,17 @@ describe('ConfigService.public_config cache', () => {
     await expect(service.public_config()).resolves.toMatchObject({ ENABLE_COMMENTS: 'true' });
   });
 
-  it('keeps applicant relay credentials private even if mistakenly allowlisted', async () => {
+  it('keeps private connection settings on the server even if mistakenly allowlisted', async () => {
     const original = process.env;
     process.env = {
       ...original,
       ALLOWED_CLIENT_CONFIG_VARS:
-        'LANGUAGE, TOOLJET_BORROWER_ONBOARDING, TOOLJET_DEALER_ONBOARDING, TOOLJET_DEALER_PARTICIPANT',
+        'LANGUAGE, TOOLJET_BORROWER_ONBOARDING, TOOLJET_DEALER_ONBOARDING, TOOLJET_DEALER_PARTICIPANT, TOOLJET_OIDC_REST_SOURCES, TOOLJET_OIDC_THOR_ORIGIN',
       TOOLJET_BORROWER_ONBOARDING: '{"lspSecret":"synthetic-private-secret"}',
       TOOLJET_DEALER_ONBOARDING: '{"lspSecret":"synthetic-other-private-secret"}',
       TOOLJET_DEALER_PARTICIPANT: '{"lspSecret":"synthetic-participant-secret"}',
+      TOOLJET_OIDC_REST_SOURCES: '{"synthetic-source-id":"http://target.namespace.svc.cluster.local"}',
+      TOOLJET_OIDC_THOR_ORIGIN: 'http://identity.namespace.svc.cluster.local',
       LANGUAGE: 'en',
     };
     try {
@@ -60,6 +62,8 @@ describe('ConfigService.public_config cache', () => {
       expect(config).not.toHaveProperty('TOOLJET_BORROWER_ONBOARDING');
       expect(config).not.toHaveProperty('TOOLJET_DEALER_ONBOARDING');
       expect(config).not.toHaveProperty('TOOLJET_DEALER_PARTICIPANT');
+      expect(config).not.toHaveProperty('TOOLJET_OIDC_REST_SOURCES');
+      expect(config).not.toHaveProperty('TOOLJET_OIDC_THOR_ORIGIN');
     } finally {
       process.env = original;
     }

@@ -16,6 +16,7 @@ import { AppHistoryModule } from '@modules/app-history/module';
 import { GitSyncConfigsModule } from '@modules/git-sync-configs/module';
 import { DataQueryFolderMappingRepository } from '@modules/data-query-folders/repository';
 import { AppScopedThrottlerGuard } from './throttler/app-scoped-throttler.guard';
+import { SessionModule } from '@modules/session/module';
 
 function parsePositiveInt(raw: unknown, fallback: number): number {
   if (raw === undefined || raw === null || raw === '') return fallback;
@@ -45,6 +46,7 @@ export class DataQueriesModule extends SubModule {
         await AppPermissionsModule.register(configs),
         await AppHistoryModule.register(configs),
         await GitSyncConfigsModule.register(configs),
+        await SessionModule.register(configs),
         // 50/s per (user, app). Single-pod counters until Redis storage added.
         ThrottlerModule.forRootAsync({
           imports: [ConfigModule],
