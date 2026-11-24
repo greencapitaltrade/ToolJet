@@ -17,7 +17,6 @@ import { GitSyncConfigsModule } from '@modules/git-sync-configs/module';
 import { DataQueryFolderMappingRepository } from '@modules/data-query-folders/repository';
 import { AppScopedThrottlerGuard } from './throttler/app-scoped-throttler.guard';
 import { SessionModule } from '@modules/session/module';
-import { StaffRelayService } from './staff-relay.service';
 
 function parsePositiveInt(raw: unknown, fallback: number): number {
   if (raw === undefined || raw === null || raw === '') return fallback;
@@ -72,7 +71,6 @@ export class DataQueriesModule extends SubModule {
         DataSourceFeatureAbilityFactory,
         DataQueryFolderMappingRepository,
         AppScopedThrottlerGuard,
-        StaffRelayService,
         GitSyncQueryEditGuard,
       ],
       exports: [DataQueriesUtilService],

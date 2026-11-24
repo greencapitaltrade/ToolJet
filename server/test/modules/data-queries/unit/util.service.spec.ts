@@ -57,10 +57,6 @@ describe('DataQueriesUtilService', () => {
     dataSourceUtilService = module.get<DataSourcesUtilService>(DataSourcesUtilService);
   });
 
-  it('can be instantiated without the staff relay provider', () => {
-    expect(service).toBeInstanceOf(DataQueriesUtilService);
-  });
-
   describe('parseQueryOptions', () => {
     it('should traverse objects and arrays properly', async () => {
       const object = {

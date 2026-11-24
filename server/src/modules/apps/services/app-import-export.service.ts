@@ -49,6 +49,7 @@ import {
 } from 'src/helpers/go_to_app_link.helper';
 import { remapFlexContainerChildOrder } from '@modules/versions/helpers/version-copy-parent.helper';
 import { DataSourceScopes, DataSourceTypes } from '@modules/data-sources/constants';
+import { assertCanUseOidcRestSource } from '@modules/data-queries/oidc-rest';
 import { LayoutDimensionUnits } from '../constants';
 import { convertAppDefinitionFromSinglePageToMultiPage } from 'src/../lib/single-page-to-and-from-multipage-definition-conversion';
 import { DataSourcesUtilService } from '@modules/data-sources/util.service';
@@ -3246,7 +3247,10 @@ export class AppImportExportService {
         useExisting = false;
       }
     }
-    if (useExisting && existingDatasource) return existingDatasource;
+    if (useExisting && existingDatasource) {
+      await assertCanUseOidcRestSource(user, existingDatasource, this.abilityService);
+      return existingDatasource;
+    }
 
     if (isGitApp) {
       // Per-app dataSources are no longer pushed to git. When a query

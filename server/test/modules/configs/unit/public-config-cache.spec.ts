@@ -43,20 +43,17 @@ describe('ConfigService.public_config cache', () => {
     await expect(service.public_config()).resolves.toMatchObject({ ENABLE_COMMENTS: 'true' });
   });
 
-  it('keeps onboarding, credit review and finance credentials private even if mistakenly allowlisted', async () => {
+  it('keeps private connection settings on the server even if mistakenly allowlisted', async () => {
     const original = process.env;
     process.env = {
       ...original,
       ALLOWED_CLIENT_CONFIG_VARS:
-        'LANGUAGE, TOOLJET_BORROWER_ONBOARDING, TOOLJET_DEALER_ONBOARDING, TOOLJET_DEALER_PARTICIPANT, TOOLJET_CREDIT_REVIEW_SIGNING_KEY, TOOLJET_FINANCE_APP_ID, TOOLJET_FINANCE_IRONMAN_ORIGIN, TOOLJET_FINANCE_READ_KEY, TOOLJET_FINANCE_CSV_KEY',
+        'LANGUAGE, TOOLJET_BORROWER_ONBOARDING, TOOLJET_DEALER_ONBOARDING, TOOLJET_DEALER_PARTICIPANT, TOOLJET_OIDC_REST_SOURCES, TOOLJET_OIDC_THOR_ORIGIN',
       TOOLJET_BORROWER_ONBOARDING: '{"lspSecret":"synthetic-private-secret"}',
       TOOLJET_DEALER_ONBOARDING: '{"lspSecret":"synthetic-other-private-secret"}',
       TOOLJET_DEALER_PARTICIPANT: '{"lspSecret":"synthetic-participant-secret"}',
-      TOOLJET_CREDIT_REVIEW_SIGNING_KEY: 'synthetic-test-signing-key',
-      TOOLJET_FINANCE_APP_ID: 'fixture-private-app',
-      TOOLJET_FINANCE_IRONMAN_ORIGIN: 'http://private-service',
-      TOOLJET_FINANCE_READ_KEY: 'synthetic-read-key',
-      TOOLJET_FINANCE_CSV_KEY: 'synthetic-csv-key',
+      TOOLJET_OIDC_REST_SOURCES: '{"synthetic-source-id":"http://target.namespace.svc.cluster.local"}',
+      TOOLJET_OIDC_THOR_ORIGIN: 'http://identity.namespace.svc.cluster.local',
       LANGUAGE: 'en',
     };
     try {
@@ -65,11 +62,8 @@ describe('ConfigService.public_config cache', () => {
       expect(config).not.toHaveProperty('TOOLJET_BORROWER_ONBOARDING');
       expect(config).not.toHaveProperty('TOOLJET_DEALER_ONBOARDING');
       expect(config).not.toHaveProperty('TOOLJET_DEALER_PARTICIPANT');
-      expect(config).not.toHaveProperty('TOOLJET_CREDIT_REVIEW_SIGNING_KEY');
-      expect(config).not.toHaveProperty('TOOLJET_FINANCE_APP_ID');
-      expect(config).not.toHaveProperty('TOOLJET_FINANCE_IRONMAN_ORIGIN');
-      expect(config).not.toHaveProperty('TOOLJET_FINANCE_READ_KEY');
-      expect(config).not.toHaveProperty('TOOLJET_FINANCE_CSV_KEY');
+      expect(config).not.toHaveProperty('TOOLJET_OIDC_REST_SOURCES');
+      expect(config).not.toHaveProperty('TOOLJET_OIDC_THOR_ORIGIN');
     } finally {
       process.env = original;
     }

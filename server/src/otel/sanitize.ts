@@ -1,5 +1,5 @@
 const CREDENTIAL_KEYS =
-  /^(?:password|current_password|new_password|token|access_token|refresh_token|subject_token|actor_token|id_token|client_secret|code|code_verifier|code_challenge|state|ticket|bootstrap|nonce|clientSecret|csrfToken|secret|authorization|cookie|tj_oauth_viewer|x-tooljet-delegation|x-tooljet-oauth-csrf|x-gct-credit-review-proof|TOOLJET_CREDIT_REVIEW_SIGNING_KEY|TOOLJET_FINANCE_(?:READ|CSV)_KEY|onboarding|referralToken|referral_token|otp|api-secret)$/i;
+  /^(?:password|current_password|new_password|token|access_token|refresh_token|subject_token|actor_token|id_token|client_secret|code|code_verifier|code_challenge|state|ticket|bootstrap|nonce|clientSecret|csrfToken|secret|authorization|cookie|tj_oauth_viewer|x-tooljet-delegation|x-tooljet-oauth-csrf|onboarding|referralToken|referral_token|otp|api-secret)$/i;
 
 /** Keep credential-bearing OAuth requests out of trace attributes. */
 export function sanitizeTraceObject(value: any): any {
