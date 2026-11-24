@@ -26,7 +26,7 @@ export abstract class PinnedOidcAppGuard extends ConfiguredOidcWorkspaceGuard {
     const workspaceId = getConfiguredOidcSettings()?.workspaceId;
     if (!workspaceId || request.user?.organizationId !== workspaceId) return false;
 
-    // Pin the resource independently of the caller and before the native RUN_VIEWER guard.
+    // Pin the resource independently of the caller before checking the app viewer permission.
     const app = await this.apps.findById(id, workspaceId);
     if (
       app?.id !== id ||

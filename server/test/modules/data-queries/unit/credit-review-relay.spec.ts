@@ -13,6 +13,7 @@ import {
 } from '@modules/data-queries/credit-review.controller';
 import { FeatureAbilityFactory } from '@modules/data-queries/ability/app';
 import { FeatureAbilityGuard } from '@modules/data-queries/ability/app/guard';
+import { FEATURE_KEY } from '@modules/data-queries/constants';
 import { MODULES } from '@modules/app/constants/modules';
 import { AppsRepository } from '@modules/apps/repository';
 import { LicenseTermsService } from '@modules/licensing/interfaces/IService';
@@ -137,7 +138,7 @@ describe('private credit review relay', () => {
   it('uses the native query viewer permission for the configured private released app', async () => {
     const reflector = new Reflector();
     expect(reflector.get('tjModuleId', CreditReviewController)).toBe(MODULES.DATA_QUERY);
-    expect(reflector.get('tjFeatureId', CreditReviewController.prototype.relay)).toBe('runViewer');
+    expect(reflector.get('tjFeatureId', CreditReviewController.prototype.relay)).toBe(FEATURE_KEY.RUN_STAFF_RELAY);
     expect(reflector.get('__guards__', CreditReviewController)).toEqual(
       expect.arrayContaining([CreditReviewGuard, CreditReviewViewerGuard])
     );

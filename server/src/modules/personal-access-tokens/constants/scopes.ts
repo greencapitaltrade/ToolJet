@@ -7,6 +7,7 @@ import { FEATURE_KEY as VERSION_FEATURE } from '@modules/versions/constants';
 import { FEATURE_KEY as PLUGIN_FEATURE } from '@modules/plugins/constants';
 import { FEATURE_KEY as APP_FEATURE } from '@modules/apps/constants';
 import { FEATURE_KEY as DATA_QUERY_FOLDER_FEATURE } from '@modules/data-query-folders/constants';
+import { FEATURE_KEY as DATA_QUERY_FEATURE } from '@modules/data-queries/constants';
 
 /**
  * What a WORKSPACE personal access token may reach.
@@ -202,8 +203,12 @@ export const PAT_APP_VIEWER_NEVER_GRANTABLE: MODULES[] = [MODULES.PERSONAL_ACCES
 
 const APP_VIEWER_MODULES: ReadonlySet<MODULES> = new Set(PAT_APP_VIEWER_MODULES);
 
+function requiresNativeSession(module: MODULES, feature?: string): boolean {
+  return module === MODULES.DATA_QUERY && feature === DATA_QUERY_FEATURE.RUN_STAFF_RELAY;
+}
+
 export function patAppViewerCanAccess(module: MODULES | undefined, feature?: string): boolean {
-  if (!module) return false;
+  if (!module || requiresNativeSession(module, feature)) return false;
   if (PAT_APP_VIEWER_NEVER_GRANTABLE.includes(module)) return false;
   if (!APP_VIEWER_MODULES.has(module)) return false;
   const allowedFeatures = PAT_APP_VIEWER_FEATURES[module];
@@ -253,7 +258,7 @@ export function patBundleOf(module: MODULES): PAT_BUNDLE | undefined {
  * new endpoint is locked down by default instead of silently escaping the allowlist.
  */
 export function patCanAccess(module: MODULES | undefined, feature?: string): boolean {
-  if (!module) return false;
+  if (!module || requiresNativeSession(module, feature)) return false;
   // Installed API specs are read-only datasource metadata. Keep plugin administration in its
   // instance-admin bundle while allowing data clients to discover valid query contracts.
   if (module === MODULES.PLUGINS && feature === PLUGIN_FEATURE.GET_SPEC) {

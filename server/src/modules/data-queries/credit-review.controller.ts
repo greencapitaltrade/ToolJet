@@ -131,7 +131,7 @@ export class CreditReviewController {
   constructor(private readonly sessions: SessionUtilService) {}
 
   @Post()
-  @InitFeature(FEATURE_KEY.RUN_VIEWER)
+  @InitFeature(FEATURE_KEY.RUN_STAFF_RELAY)
   @Header('Cache-Control', 'no-store')
   async relay(@Req() request: OidcWorkspaceRequest, @Body() body: unknown, @Res() response: Response) {
     const fail = (status: number) => response.status(status).json({ error: errors.get(status) });

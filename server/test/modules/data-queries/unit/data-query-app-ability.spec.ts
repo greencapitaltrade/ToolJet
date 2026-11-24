@@ -352,6 +352,7 @@ describe('defineDataQueryAppAbility — End User RUN_VIEWER on regular apps', ()
   it('End User CANNOT RUN_VIEWER a regular app not shared with them', () => {
     const ability = buildAbility(endUserPermissions(), appInstance('app-unshared'));
     expect(ability.can(FEATURE_KEY.RUN_VIEWER, App)).toBe(false);
+    expect(ability.can(FEATURE_KEY.RUN_STAFF_RELAY, App)).toBe(false);
     expect(ability.can(FEATURE_KEY.RUN_EDITOR, App)).toBe(false);
     expect(ability.can(FEATURE_KEY.GET, App)).toBe(false);
   });
@@ -359,20 +360,24 @@ describe('defineDataQueryAppAbility — End User RUN_VIEWER on regular apps', ()
   it('End User CAN RUN_VIEWER a regular app in their viewableAppsId', () => {
     const ability = buildAbility(endUserPermissions({ viewableAppsId: ['app-shared'] }), appInstance('app-shared'));
     expect(ability.can(FEATURE_KEY.RUN_VIEWER, App)).toBe(true);
+    expect(ability.can(FEATURE_KEY.RUN_STAFF_RELAY, App)).toBe(true);
   });
 
   it('End User CAN RUN_VIEWER a regular app when their group grants view-all (isAllViewable)', () => {
     const ability = buildAbility(endUserPermissions({ isAllViewable: true }), appInstance('any-app'));
     expect(ability.can(FEATURE_KEY.RUN_VIEWER, App)).toBe(true);
+    expect(ability.can(FEATURE_KEY.RUN_STAFF_RELAY, App)).toBe(true);
   });
 
   it('End User CAN RUN_VIEWER a public app even when not shared', () => {
     const ability = buildAbility(endUserPermissions(), appInstance('public-app', true));
     expect(ability.can(FEATURE_KEY.RUN_VIEWER, App)).toBe(true);
+    expect(ability.can(FEATURE_KEY.RUN_STAFF_RELAY, App)).toBe(false);
   });
 
   it('End User retains RUN_VIEWER on module queries (transitive access via embedding apps)', () => {
     const ability = buildAbility(endUserPermissions(), moduleAppInstance('mod-1'));
     expect(ability.can(FEATURE_KEY.RUN_VIEWER, App)).toBe(true);
+    expect(ability.can(FEATURE_KEY.RUN_STAFF_RELAY, App)).toBe(false);
   });
 });

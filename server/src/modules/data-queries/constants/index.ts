@@ -6,6 +6,7 @@ export enum FEATURE_KEY {
   UPDATE_ONE = 'updateOne',
   UPDATE_DATA_SOURCE = 'updateDataSource',
   RUN_VIEWER = 'runViewer',
+  RUN_STAFF_RELAY = 'runStaffRelay',
   RUN_EDITOR = 'runEditor',
   PREVIEW = 'preview',
   LIST_TABLES = 'listTables',
