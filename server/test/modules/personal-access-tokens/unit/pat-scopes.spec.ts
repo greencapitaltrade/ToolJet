@@ -53,9 +53,8 @@ describe('PAT scope definition', () => {
   it.each([
     ['workspace', patCanAccess],
     ['app viewer', patAppViewerCanAccess],
-  ] as const)('allows ordinary query runs and excludes staff relays from the %s scope', (_scope, canAccess) => {
+  ] as const)('allows ordinary query runs in the %s scope', (_scope, canAccess) => {
     expect(canAccess(MODULES.DATA_QUERY, DATA_QUERY_FEATURE.RUN_VIEWER)).toBe(true);
-    expect(canAccess(MODULES.DATA_QUERY, DATA_QUERY_FEATURE.RUN_STAFF_RELAY)).toBe(false);
   });
 
   it('allows everything an app-building automation client calls', () => {

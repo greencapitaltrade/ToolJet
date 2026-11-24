@@ -1,23 +1,15 @@
 import { createPrivateKey, sign } from 'node:crypto';
-import { Body, Controller, Header, Injectable, Post, Req, Res, UseGuards } from '@nestjs/common';
-import type { Response } from 'express';
 import { privateServiceOrigin } from '@helpers/private-service-origin';
-import { MODULES } from '@modules/app/constants/modules';
-import { InitFeature } from '@modules/app/decorators/init-feature.decorator';
-import { InitModule } from '@modules/app/decorators/init-module';
 import { getConfiguredOidcSettings } from '@modules/auth/oauth/configured-oidc.config';
 import {
-  type OidcWorkspaceRequest,
+  type OidcActorUser,
   positiveId,
   resolveThorActor,
   ThorActorError,
 } from '@modules/auth/oauth/configured-oidc-workspace';
 import { SessionUtilService } from '@modules/session/util.service';
-import { FeatureAbilityGuard } from './ability/app/guard';
-import { FEATURE_KEY } from './constants';
+import type { RelayResult } from './staff-relay.service';
 import { CREDIT_REVIEW_SIGNING_KEY_ENV } from './credit-review.config';
-import { PinnedOidcAppGuard } from './pinned-oidc-app.guard';
-import { AppScopedThrottlerGuard } from './throttler/app-scoped-throttler.guard';
 
 const errors = new Map([
   [400, 'This action or its inputs are invalid.'],
@@ -113,62 +105,45 @@ function reviewRequest(body: unknown) {
   };
 }
 
-@Injectable()
-export class CreditReviewGuard extends PinnedOidcAppGuard {
-  protected get appId() {
-    return process.env.TOOLJET_CREDIT_REVIEW_APP_ID;
-  }
-}
+export async function runCreditReview(
+  sessions: SessionUtilService,
+  user: OidcActorUser,
+  body: unknown
+): Promise<RelayResult> {
+  const fail = (status: number) => ({ status, error: errors.get(status) });
+  const config = settings();
+  if (!config) return fail(404);
+  const review = reviewRequest(body);
+  if (!review) return fail(400);
 
-// The native guard stores its resource while awaiting the permission check. Isolate it to this fixed app.
-@Injectable()
-export class CreditReviewViewerGuard extends FeatureAbilityGuard {}
-
-@Controller('credit-review')
-@InitModule(MODULES.DATA_QUERY)
-@UseGuards(CreditReviewGuard, CreditReviewViewerGuard, AppScopedThrottlerGuard)
-export class CreditReviewController {
-  constructor(private readonly sessions: SessionUtilService) {}
-
-  @Post()
-  @InitFeature(FEATURE_KEY.RUN_STAFF_RELAY)
-  @Header('Cache-Control', 'no-store')
-  async relay(@Req() request: OidcWorkspaceRequest, @Body() body: unknown, @Res() response: Response) {
-    const fail = (status: number) => response.status(status).json({ error: errors.get(status) });
-    const config = settings();
-    if (!config) return fail(404);
-    const review = reviewRequest(body);
-    if (!review) return fail(400);
-
-    try {
-      const { userId, organizationId } = await resolveThorActor(this.sessions, request.user, config);
-      const expiry = String(Math.floor(Date.now() / 1000) + 30);
-      const message = JSON.stringify([
-        'destiny-borrower-credit-review-v2',
-        review.contextId,
-        userId,
-        organizationId,
-        review.signatureFields,
-        expiry,
-      ]);
-      const signature = sign(null, Buffer.from(message, 'utf8'), config.key).toString('base64url');
-      const result = await fetch(new URL(review.path, config.destinyOrigin).href, {
-        method: 'POST',
-        redirect: 'error',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-gct-user-id': userId,
-          'x-gct-org-id': organizationId,
-          'x-gct-credit-review-proof': `${userId}.${expiry}.${signature}`,
-        },
-        body: JSON.stringify(review.body),
-        signal: AbortSignal.timeout(20_000),
-      });
-      if (!result.ok) return fail(errors.has(result.status) ? result.status : 503);
-      const data: unknown = await result.json();
-      return record(data) ? response.status(200).json({ data }) : fail(503);
-    } catch (error) {
-      return fail(error instanceof ThorActorError ? error.status : 503);
-    }
+  try {
+    const { userId, organizationId } = await resolveThorActor(sessions, user, config);
+    const expiry = String(Math.floor(Date.now() / 1000) + 30);
+    const message = JSON.stringify([
+      'destiny-borrower-credit-review-v2',
+      review.contextId,
+      userId,
+      organizationId,
+      review.signatureFields,
+      expiry,
+    ]);
+    const signature = sign(null, Buffer.from(message, 'utf8'), config.key).toString('base64url');
+    const result = await fetch(new URL(review.path, config.destinyOrigin).href, {
+      method: 'POST',
+      redirect: 'error',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-gct-user-id': userId,
+        'x-gct-org-id': organizationId,
+        'x-gct-credit-review-proof': `${userId}.${expiry}.${signature}`,
+      },
+      body: JSON.stringify(review.body),
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!result.ok) return fail(errors.has(result.status) ? result.status : 503);
+    const data: unknown = await result.json();
+    return record(data) ? { status: 200, data } : fail(503);
+  } catch (error) {
+    return fail(error instanceof ThorActorError ? error.status : 503);
   }
 }

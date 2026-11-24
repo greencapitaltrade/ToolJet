@@ -1,4 +1,5 @@
 import { Test } from '@nestjs/testing';
+import { StaffRelayService } from '@modules/data-queries/staff-relay.service';
 import { DataQueriesUtilService } from '@modules/data-queries/util.service';
 import { VersionRepository } from '@modules/versions/repository';
 import { ConfigService } from '@nestjs/config';
@@ -16,6 +17,7 @@ describe('DataQueriesUtilService.runQuery — isPublic/appName resolution', () =
     const module = await Test.createTestingModule({
       providers: [
         DataQueriesUtilService,
+        { provide: StaffRelayService, useValue: { run: jest.fn() } },
         { provide: VersionRepository, useValue: {} },
         { provide: ConfigService, useValue: { get: jest.fn().mockReturnValue('false') } },
         {

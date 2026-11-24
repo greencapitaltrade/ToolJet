@@ -21,10 +21,6 @@ export function defineDataQueryAppAbility(
   const isCanCreate = isModule ? userPermission.moduleCreate : userPermission.appCreate;
   const isCanDelete = isModule ? userPermission.moduleDelete : userPermission.appDelete;
   const isAllViewable = !!resourcePermissions?.isAllViewable;
-  const viewerRunFeatures =
-    app?.type === APP_TYPES.FRONT_END && app.isPublic === false
-      ? [FEATURE_KEY.RUN_VIEWER, FEATURE_KEY.RUN_STAFF_RELAY]
-      : [FEATURE_KEY.RUN_VIEWER];
 
   if (app?.isPublic) {
     can([FEATURE_KEY.RUN_VIEWER], App);
@@ -40,7 +36,7 @@ export function defineDataQueryAppAbility(
         FEATURE_KEY.UPDATE_DATA_SOURCE,
         FEATURE_KEY.UPDATE_ONE,
         FEATURE_KEY.RUN_EDITOR,
-        ...viewerRunFeatures,
+        FEATURE_KEY.RUN_VIEWER,
         FEATURE_KEY.PREVIEW,
       ],
       App
@@ -56,7 +52,7 @@ export function defineDataQueryAppAbility(
         FEATURE_KEY.UPDATE_DATA_SOURCE,
         FEATURE_KEY.UPDATE_ONE,
         FEATURE_KEY.RUN_EDITOR,
-        ...viewerRunFeatures,
+        FEATURE_KEY.RUN_VIEWER,
         FEATURE_KEY.PREVIEW,
         FEATURE_KEY.DELETE,
         FEATURE_KEY.CREATE,
@@ -74,7 +70,7 @@ export function defineDataQueryAppAbility(
         FEATURE_KEY.UPDATE_DATA_SOURCE,
         FEATURE_KEY.UPDATE_ONE,
         FEATURE_KEY.RUN_EDITOR,
-        ...viewerRunFeatures,
+        FEATURE_KEY.RUN_VIEWER,
         FEATURE_KEY.PREVIEW,
         FEATURE_KEY.DELETE,
         FEATURE_KEY.CREATE,
@@ -85,12 +81,12 @@ export function defineDataQueryAppAbility(
   }
 
   if (isAllViewable) {
-    can([FEATURE_KEY.GET, ...viewerRunFeatures, FEATURE_KEY.RUN_EDITOR], App);
+    can([FEATURE_KEY.GET, FEATURE_KEY.RUN_VIEWER, FEATURE_KEY.RUN_EDITOR], App);
     return;
   }
 
   if (resourcePermissions?.viewableAppsId?.length && appId && resourcePermissions?.viewableAppsId?.includes(appId)) {
-    can([FEATURE_KEY.GET, ...viewerRunFeatures, FEATURE_KEY.RUN_EDITOR], App);
+    can([FEATURE_KEY.GET, FEATURE_KEY.RUN_VIEWER, FEATURE_KEY.RUN_EDITOR], App);
     return;
   }
 

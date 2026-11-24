@@ -11,6 +11,7 @@ export interface WorkflowExecutionOptions {
 }
 
 export interface DataQueryExecutionOptions {
+  savedViewerQuery?: boolean;
   workflow?: WorkflowExecutionOptions;
 }
 

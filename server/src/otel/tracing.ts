@@ -1,7 +1,7 @@
 import {
   isApplicantOnboardingRequest,
   isConfiguredOidcRequest,
-  isPrivateStaffRequest,
+  isSavedQueryRun,
   sanitizeTraceObject as sanitizeObject,
 } from './sanitize';
 import { CompositePropagator, W3CTraceContextPropagator, W3CBaggagePropagator } from '@opentelemetry/core';
@@ -93,7 +93,6 @@ function createSDK(): NodeSDK {
             url.includes('/api/health') ||
             url.includes('/api/mcp-oauth/') ||
             isApplicantOnboardingRequest(url) ||
-            isPrivateStaffRequest(url) ||
             isConfiguredOidcRequest(url)
           );
         },
@@ -104,7 +103,6 @@ function createSDK(): NodeSDK {
           if (
             path.includes('/mcp-oauth/') ||
             isApplicantOnboardingRequest(request.originalUrl || path) ||
-            isPrivateStaffRequest(request.originalUrl || path) ||
             isConfiguredOidcRequest(request.originalUrl || path)
           ) {
             return;
@@ -113,6 +111,9 @@ function createSDK(): NodeSDK {
             span.updateName(`${request.method} ${path}`);
             span.setAttribute('http.route', path);
             span.setAttribute('http.method', request.method);
+
+            // Viewer query parameters can include private operation data in serialized JSON.
+            if (isSavedQueryRun(request.originalUrl || path)) return;
 
             if (request.params && Object.keys(request.params).length > 0) {
               span.setAttribute('http.params', JSON.stringify(sanitizeObject(request.params)));

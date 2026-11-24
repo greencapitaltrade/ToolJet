@@ -23,6 +23,7 @@ import { QueryWrite } from '@modules/app-validation/types';
 import { GitSyncConfigsUtilService } from '@modules/git-sync-configs/util.service';
 import { assertGitSyncEditAllowedForOrg } from '@modules/git-sync-configs/guards/git-sync-edit-guard';
 import { AppVersion } from '@entities/app_version.entity';
+import type { DataQueryExecutionOptions } from './interfaces/IUtilService';
 
 @Injectable()
 export class DataQueriesService implements IDataQueriesService {
@@ -374,7 +375,9 @@ export class DataQueriesService implements IDataQueriesService {
       appVersion: true,
     });
 
-    return this.runAndGetResult(user, dataQuery, resolvedOptions, response, undefined, 'view', app);
+    return this.runAndGetResult(user, dataQuery, resolvedOptions, response, undefined, 'view', app, {
+      savedViewerQuery: true,
+    });
   }
 
   async preview(user: User, dataQuery: DataQuery, environmentId: string, options: any, response: Response, app?: App) {
@@ -388,7 +391,8 @@ export class DataQueriesService implements IDataQueriesService {
     response: Response,
     environmentId?: string,
     mode?: string,
-    app?: App
+    app?: App,
+    opts?: DataQueryExecutionOptions
   ): Promise<object> {
     let result = {};
 
@@ -401,7 +405,7 @@ export class DataQueriesService implements IDataQueriesService {
         environmentId,
         mode,
         app,
-        undefined // opts parameter
+        opts
       );
     } catch (error) {
       if (error.constructor.name === 'QueryError') {

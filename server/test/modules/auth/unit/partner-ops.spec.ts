@@ -1,7 +1,4 @@
-import { ExecutionContext } from '@nestjs/common';
-import type { Request, Response } from 'express';
-import { PartnerOpsController, PartnerOpsGuard } from '@modules/auth/oauth/partner-ops.controller';
-import { JwtAuthGuard } from '@modules/session/guards/jwt-auth.guard';
+import { runPartnerOps } from '@modules/data-queries/partner-ops.relay';
 import type { SessionUtilService } from '@modules/session/util.service';
 
 const issuer = 'https://issuer.example.test/oidc';
@@ -12,24 +9,11 @@ const thorOrigin = 'http://thor.default.svc.cluster.local';
 const upstream = 'http://operations.default.svc.cluster.local';
 const draftId = '2dd5b04c-f85f-4d9f-afe5-06345d14a3c7';
 const session = { getOidcActor: jest.fn() };
-const controller = new PartnerOpsController(session as unknown as SessionUtilService);
+const user = { id: 'test-user', sessionId: 'test-session', organizationId: workspaceId };
 
-function request(headers: Record<string, string> = {}, cookies: Record<string, string> = { tj_auth_token: 'fixture' }) {
-  return {
-    headers: { origin: tooljetOrigin, 'content-type': 'application/json', ...headers },
-    cookies,
-    user: { id: 'test-user', sessionId: 'test-session', organizationId: workspaceId },
-  } as unknown as Parameters<typeof controller.relay>[0];
-}
-
-async function relay(body: unknown, req = request()) {
-  const response = { status: jest.fn().mockReturnThis(), json: jest.fn() };
-  await controller.relay(req, body, response as unknown as Response);
-  return { status: response.status.mock.calls[0][0], body: response.json.mock.calls[0][0] };
-}
-
-function ctx(req: Request) {
-  return { switchToHttp: () => ({ getRequest: () => req }) } as unknown as ExecutionContext;
+async function relay(body: unknown) {
+  const result = await runPartnerOps(session as unknown as SessionUtilService, user, body);
+  return { status: result.status, body: result.data ? { data: result.data } : { error: result.error } };
 }
 
 beforeEach(() => {
@@ -56,41 +40,10 @@ beforeEach(() => {
 afterEach(() => jest.restoreAllMocks());
 
 describe('partner operator workspace relay', () => {
-  it('requires a native browser session and pins the configured workspace before authenticating', async () => {
-    const guard = new PartnerOpsGuard();
-    const passport = jest.spyOn(JwtAuthGuard.prototype, 'canActivate').mockResolvedValue(true);
-    const native = request({ 'tj-workspace-id': 'untrusted' });
-    await expect(guard.canActivate(ctx(native))).resolves.toBe(true);
-    expect(passport).toHaveBeenCalledTimes(1);
-    expect(native.headers['tj-workspace-id']).toBe(workspaceId);
-
-    for (const forged of [
-      request({}, {}),
-      request({ origin: 'https://foreign.example' }),
-      request({ tj_auth_token: 'test-header' }),
-      request({ 'x-tooljet-delegation': 'test-header' }),
-      request({ 'tj-admin-api-key': 'test-header' }),
-      request({}, { tj_auth_token: 'fixture', tj_oauth_viewer: 'test-viewer' }),
-      request({ 'content-type': 'text/plain' }),
-    ]) {
-      await expect(guard.canActivate(ctx(forged))).resolves.toBe(false);
-    }
-    expect(passport).toHaveBeenCalledTimes(1);
-  });
-
   it('forwards only fixed path, allowed parameters and verified identity through the configured mesh', async () => {
     const selector = { operation: 'borrowerDpd', partnerId: '11', after: '999' };
-    const req = request({
-      'x-gct-org-id': '9000',
-      'x-gct-user-id': '9000',
-      'x-gct-oidc-issuer': 'https://foreign.example',
-      'x-gct-oidc-client-id': 'untrusted-client',
-      'x-gct-oidc-subject': '24',
-      authorization: 'Bearer untrusted',
-      'x-gct-app': 'untrusted',
-    });
-    expect(await relay(selector, req)).toEqual({ status: 200, body: { data: { rows: [] } } });
-    expect(session.getOidcActor).toHaveBeenCalledWith(req.user);
+    expect(await relay(selector)).toEqual({ status: 200, body: { data: { rows: [] } } });
+    expect(session.getOidcActor).toHaveBeenCalledWith(user);
     expect(fetch).toHaveBeenCalledTimes(2);
     expect(fetch).toHaveBeenNthCalledWith(
       1,
@@ -496,21 +449,16 @@ describe('partner operator workspace relay', () => {
   });
 
   it('stays disabled without configured SSO and private upstreams', async () => {
-    const guard = new PartnerOpsGuard();
-    const passport = jest
-      .spyOn(Object.getPrototypeOf(PartnerOpsGuard.prototype), 'canActivate')
-      .mockResolvedValue(true);
     for (const origin of [undefined, 'https://public.example.test', upstream + '/redirect', upstream + '/?target=x']) {
       if (origin === undefined) delete process.env.TOOLJET_PARTNER_OPS_UPSTREAM_ORIGIN;
       else process.env.TOOLJET_PARTNER_OPS_UPSTREAM_ORIGIN = origin;
-      await expect(guard.canActivate(ctx(request()))).resolves.toBe(false);
+      expect((await relay({ operation: 'session' })).status).toBe(404);
     }
-    expect(passport).not.toHaveBeenCalled();
     process.env.TOOLJET_PARTNER_OPS_UPSTREAM_ORIGIN = upstream;
     for (const origin of [undefined, 'https://public.example.test', thorOrigin + '/override']) {
       if (origin === undefined) delete process.env.TOOLJET_PARTNER_OPS_THOR_ORIGIN;
       else process.env.TOOLJET_PARTNER_OPS_THOR_ORIGIN = origin;
-      expect(await guard.canActivate(ctx(request()))).toBe(false);
+      expect((await relay({ operation: 'session' })).status).toBe(404);
     }
     process.env.TOOLJET_PARTNER_OPS_THOR_ORIGIN = thorOrigin;
     delete process.env.TOOLJET_OIDC_ISSUER;

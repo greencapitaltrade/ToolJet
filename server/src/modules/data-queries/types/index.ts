@@ -11,7 +11,6 @@ export interface Features {
   [FEATURE_KEY.UPDATE_ONE]: FeatureConfig;
   [FEATURE_KEY.RUN_EDITOR]: FeatureConfig;
   [FEATURE_KEY.RUN_VIEWER]: FeatureConfig;
-  [FEATURE_KEY.RUN_STAFF_RELAY]: FeatureConfig;
   [FEATURE_KEY.PREVIEW]: FeatureConfig;
   [FEATURE_KEY.LIST_TABLES]: FeatureConfig;
 }

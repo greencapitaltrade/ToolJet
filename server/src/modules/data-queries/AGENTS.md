@@ -18,9 +18,8 @@ the right plugin, per-Environment credentials, and `{{ }}` templates before invo
 |---|---|
 | `module.ts` | `register()` per SubModule pattern; per-(user, app) run throttling via `ThrottlerModule` (`DATA_QUERY_RUN_TTL`/`DATA_QUERY_RUN_LIMIT`, default 50/s, single-pod counters); exports `DataQueriesUtilService` |
 | `controller.ts` | CRUD + `POST :id/versions/:versionId/run/:environmentId` (RUN_EDITOR), `POST :id/run` (RUN_VIEWER, `QueryAuthGuard` allows unauthenticated on public apps + `AppScopedThrottlerGuard`), preview, list-tables, change data source |
-| `pinned-oidc-app.guard.ts` | Pins a private released app in the native OIDC workspace before the `RUN_STAFF_RELAY` guards check its viewer permission. PAT and OAuth scopes exclude this feature. |
-| `credit-review.controller.ts` | Signs fixed Destiny review requests for the registered Thor actor |
-| `finance.controller.ts` | Relays the organization queue and whole-batch CSV export to Ironman with separate action credentials and canonical Thor actor headers |
+| `staff-relay.service.ts` | Dispatches saved REST queries on operator-configured apps after the native RUN_VIEWER check. Dispatch uses the stored app, query and built-in source. |
+| `partner-ops.relay.ts`, `credit-review.relay.ts`, `finance.relay.ts` | Invoke fixed private service operations for the verified Thor actor. |
 | `service.ts` | CRUD orchestration; `runQueryOnBuilder`/`runQueryForApp`/`preview` → `runAndGetResult` (wraps `QueryError` into `{status: 'failed'}`); `before/afterQuery*` hooks are CE no-ops for EE App History |
 | `util.service.ts` | `runQuery` core: env option resolution, `parseQueryOptions` template resolution (`{{constants.}}`/`{{secrets.}}`/`{{globals.server.}}` via `resolveConstants`), OAuth refresh + `needs_oauth` flow, `query_timeout` abort, REST cookie/XFF forwarding, audit-log locals |
 | `repository.ts` | `getAll`, `getAllWithPermissions`, `getOneById`, `getQueriesByVersionId`, `createOne`, `deleteDataQueryEvents`, `findPublicParentAppForModuleQuery` |

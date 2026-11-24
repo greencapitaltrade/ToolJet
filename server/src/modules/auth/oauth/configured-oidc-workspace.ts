@@ -1,33 +1,6 @@
-import { Injectable, type ExecutionContext } from '@nestjs/common';
-import type { Request } from 'express';
-import { JwtAuthGuard } from '@modules/session/guards/jwt-auth.guard';
 import type { SessionUtilService } from '@modules/session/util.service';
-import { getConfiguredOidcSettings } from './configured-oidc.config';
 
-export type OidcWorkspaceRequest = Request & { user: Parameters<SessionUtilService['getOidcActor']>[0] };
-
-@Injectable()
-export class ConfiguredOidcWorkspaceGuard extends JwtAuthGuard {
-  async canActivate(context: ExecutionContext): Promise<boolean> {
-    const config = getConfiguredOidcSettings();
-    const request: Request = context.switchToHttp().getRequest();
-    if (
-      !config ||
-      request.headers.origin !== config.origin ||
-      request.headers['content-type']?.split(';')[0].trim().toLowerCase() !== 'application/json' ||
-      typeof request.cookies?.tj_auth_token !== 'string' ||
-      !request.cookies.tj_auth_token ||
-      request.cookies.tj_oauth_viewer ||
-      request.headers.tj_auth_token ||
-      request.headers['x-tooljet-delegation'] ||
-      request.headers['tj-admin-api-key']
-    ) {
-      return false;
-    }
-    request.headers['tj-workspace-id'] = config.workspaceId;
-    return (await super.canActivate(context)) === true;
-  }
-}
+export type OidcActorUser = Parameters<SessionUtilService['getOidcActor']>[0];
 
 export function positiveId(value: unknown): value is string {
   return (
@@ -43,7 +16,7 @@ export class ThorActorError extends Error {
 
 export async function resolveThorActor(
   sessions: SessionUtilService,
-  user: OidcWorkspaceRequest['user'],
+  user: OidcActorUser,
   config: { issuer: string; clientId: string; thorOrigin: string }
 ): Promise<{ userId: string; organizationId: string }> {
   const actor = await sessions.getOidcActor(user).catch(() => null);

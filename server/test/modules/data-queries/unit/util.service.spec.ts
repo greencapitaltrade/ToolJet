@@ -1,5 +1,6 @@
 /** @group platform */
 import { Test, TestingModule } from '@nestjs/testing';
+import { StaffRelayService } from '../../../../src/modules/data-queries/staff-relay.service';
 import { DataQueriesUtilService } from '../../../../src/modules/data-queries/util.service';
 import { ConfigService } from '@nestjs/config';
 import { VersionRepository } from '../../../../src/modules/versions/repository';
@@ -22,6 +23,7 @@ describe('DataQueriesUtilService', () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         DataQueriesUtilService,
+        { provide: StaffRelayService, useValue: { run: jest.fn() } },
         {
           provide: ConfigService,
           useValue: {

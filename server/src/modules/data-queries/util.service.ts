@@ -6,7 +6,7 @@ import { dbTransactionWrap } from '@helpers/database.helper';
 import { redactSecretValues } from '@helpers/utils.helper';
 import { AppEnvironmentUtilService } from '@modules/app-environments/util.service';
 import { VersionRepository } from '@modules/versions/repository';
-import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable, UnauthorizedException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { QueryError } from '@tooljet/plugins';
 import { EntityManager } from 'typeorm';
@@ -26,9 +26,13 @@ import { AbortControllerHandler } from '@helpers/abortqueryhandler.helper';
 import { AppVersion } from '@entities/app_version.entity';
 import { ListTablesDto } from './dto';
 import { DataSourceTypes, SAMPLE_SQL_DISABLED_KEY } from '@modules/data-sources/constants';
+import { StaffRelayService } from './staff-relay.service';
 
 @Injectable()
 export class DataQueriesUtilService implements IDataQueriesUtilService {
+  @Inject(StaffRelayService)
+  protected readonly staffRelay: StaffRelayService;
+
   constructor(
     protected readonly versionRepository: VersionRepository,
     protected readonly configService: ConfigService,
@@ -133,6 +137,22 @@ export class DataQueriesUtilService implements IDataQueriesUtilService {
       resolvedEnvironmentId = environmentId;
 
       dataSource.options = dataSourceOptions.options;
+
+      if (opts?.savedViewerQuery) {
+        const relay = await this.staffRelay?.run(user, appToUse, dataQuery, queryOptions);
+        if (relay) {
+          response.setHeader('Cache-Control', 'no-store');
+          const status = relay.status === 200 ? 'ok' : 'failed';
+          if (status === 'ok') queryStatus.setSuccess();
+          else queryStatus.setFailure({ message: relay.error });
+          return {
+            status,
+            data: status === 'ok' ? relay.data : { status: relay.status },
+            ...(relay.error && { message: relay.error }),
+            metadata: queryStatus.getResponseMetadata(),
+          };
+        }
+      }
 
       let { sourceOptions, parsedQueryOptions, service } = await this.fetchServiceAndParsedParams(
         dataSource,

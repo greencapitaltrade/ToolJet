@@ -18,10 +18,6 @@ export const FEATURES: FeaturesConfig = {
     [FEATURE_KEY.RUN_VIEWER]: {
       auditLogsKey: 'DATA_QUERY_RUN',
     },
-    [FEATURE_KEY.RUN_STAFF_RELAY]: {
-      auditLogsKey: 'DATA_QUERY_RUN',
-      shouldNotSkipPublicApp: true,
-    },
     [FEATURE_KEY.PREVIEW]: {
       auditLogsKey: 'DATA_QUERY_RUN',
       shouldNotSkipPublicApp: true,
