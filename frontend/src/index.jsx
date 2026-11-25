@@ -12,10 +12,14 @@ import { initReactI18next } from 'react-i18next';
 import Backend from 'i18next-http-backend';
 import config from 'config';
 import { captureMcpOAuthBootstrap } from './McpOAuth/bootstrap';
+import { captureReferralHandoff, getReferralHandoff, clearReferralHandoff } from './ReferralHandoff/bootstrap';
 
 // OAuth bootstrap fragments are credentials. Remove them before config,
 // analytics, error reporting, or the router can capture the page URL.
 captureMcpOAuthBootstrap();
+captureReferralHandoff();
+window.getToolJetReferralHandoff = () => getReferralHandoff();
+window.clearToolJetReferralHandoff = (token) => clearReferralHandoff(token);
 
 // When on a custom domain, use relative API path so requests go through the
 // Cloudflare Worker proxy, making cookies first-party (fixes incognito sign-in).
