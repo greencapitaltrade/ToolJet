@@ -107,6 +107,19 @@ test('signing binds the held referral for owner and claimed participant with onl
   for (const query of [{ ...sign, method: 'get' }, { ...sign, url: sign.url.replace('own-sign', 'sign') }, { ...sign, url: sign.url.replace('draftId', 'other') }]) assert.throws(() => bindDealerReferral(query, query, participant));
 });
 
+test('completion PREPARE requires a version and binds only the protected referral', () => {
+  const completion = { ...base, url: '/v1/channel-partners/intakes/{{parameters.draftId}}/referral-completion' };
+  const bind = input => bindDealerReferral(completion, { ...completion, raw_body: JSON.stringify({ input }) }, actor);
+  assert.deepEqual(JSON.parse(bind({ action: 'PREPARE', version: 3 }).raw_body), {
+    input: { action: 'PREPARE', version: 3, referral_token: referral },
+  });
+  for (const input of [
+    { action: 'PREPARE' }, { action: 'PREPARE', version: 0 }, { action: 'PREPARE', version: 1.5 },
+    { action: 'PREPARE', version: 3, referral_token: 'forged' },
+    { action: 'PREPARE', version: 3, user_id: '7' }, { action: 'PREPARE', version: 3, actor: '7' },
+  ]) assert.throws(() => bind(input));
+});
+
 test('completion is owner-only and accepts the exact advertised action packet', () => {
   const completion = { ...base, url: '/v1/channel-partners/intakes/{{parameters.draftId}}/referral-completion' };
   for (const input of [{ action: 'STATUS' }, ...['FREEZE', 'REFRESH', 'VERIFY_BANK', 'SUBMIT'].map(action => ({ action, version: 3 }))]) {

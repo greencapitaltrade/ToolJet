@@ -138,7 +138,7 @@ export function bindDealerReferral<T extends NativeOptions>(saved: NativeOptions
     const status = completion && packet.action === 'STATUS';
     const validVersion = Number.isSafeInteger(packet.version) && (packet.version as number) >= 1;
     if (sign ? Object.keys(packet).length !== 1 || !validVersion :
-      !['STATUS', 'FREEZE', 'REFRESH', 'VERIFY_BANK', 'SUBMIT'].includes(packet.action as string) ||
+      !['STATUS', 'PREPARE', 'FREEZE', 'REFRESH', 'VERIFY_BANK', 'SUBMIT'].includes(packet.action as string) ||
       Object.keys(packet).length !== (status ? 1 : 2) || (!status && !validVersion)) throw new Error('Invalid dealer signing body');
     return { ...parsed, raw_body: JSON.stringify({ input: { ...packet, referral_token: actor.referral } }) };
   }
