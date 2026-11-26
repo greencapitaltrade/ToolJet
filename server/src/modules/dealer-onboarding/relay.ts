@@ -511,7 +511,9 @@ export function projectVoltcredEvidence(stage: string, data: unknown) {
   if (
     !Array.isArray(requested) ||
     requested.length > 3 ||
-    requested.some((code) => typeof code !== 'string' || !Object.hasOwn(evidenceDefinitions, code)) ||
+    requested.some(
+      (code) => typeof code !== 'string' || !Object.prototype.hasOwnProperty.call(evidenceDefinitions, code)
+    ) ||
     new Set(requested).size !== requested.length ||
     (stage !== 'additional_documents' && requested.length)
   )
@@ -1622,7 +1624,7 @@ export class DealerOnboarding {
         (person) =>
           object(person) &&
           Object.keys(person).length === personKeys.length &&
-          personKeys.every((k) => Object.hasOwn(person, k)) &&
+          personKeys.every((k) => Object.prototype.hasOwnProperty.call(person, k)) &&
           ((allowNew && person.slot_id === null) ||
             (typeof person.slot_id === 'string' && /^person[a-f0-9]{32}$/.test(person.slot_id))) &&
           ['name', 'email', 'din'].every((k) => typeof person[k] === 'string' && (person[k] as string).length <= 255)
@@ -2304,7 +2306,10 @@ export class DealerOnboarding {
       if (
         keys.length !== allowed.length ||
         !allowed.every(
-          (k) => Object.hasOwn(fields, k) && typeof fields[k] === 'string' && (fields[k] as string).length <= 2000
+          (k) =>
+            Object.prototype.hasOwnProperty.call(fields, k) &&
+            typeof fields[k] === 'string' &&
+            (fields[k] as string).length <= 2000
         )
       )
         return rejectApplicant(400);
@@ -2365,7 +2370,8 @@ export class DealerOnboarding {
         if (
           !current.execution ||
           !object(input.fields) ||
-          Object.hasOwn(input.fields, 'registration_details') !== (current.execution === 'registration_details')
+          Object.prototype.hasOwnProperty.call(input.fields, 'registration_details') !==
+            (current.execution === 'registration_details')
         )
           return rejectApplicant(409);
         const saved = await send('SAVE');
@@ -2406,7 +2412,8 @@ export class DealerOnboarding {
         current.execution_readiness !== 'pending' ||
         !current.execution ||
         !object(input.fields) ||
-        Object.hasOwn(input.fields, 'registration_details') !== (current.execution === 'registration_details')
+        Object.prototype.hasOwnProperty.call(input.fields, 'registration_details') !==
+          (current.execution === 'registration_details')
       )
         return rejectApplicant(409);
       const saved = project(
@@ -2486,7 +2493,7 @@ export class DealerOnboarding {
           if (
             !object(result) ||
             typeof result.stage !== 'string' ||
-            !Object.hasOwn(allowed, result.stage) ||
+            !Object.prototype.hasOwnProperty.call(allowed, result.stage) ||
             !Number.isSafeInteger(result.version) ||
             (result.version as number) < version ||
             !Array.isArray(result.actions) ||
@@ -2536,7 +2543,7 @@ export class DealerOnboarding {
         if (
           !object(result) ||
           typeof result.stage !== 'string' ||
-          !Object.hasOwn(allowed, result.stage) ||
+          !Object.prototype.hasOwnProperty.call(allowed, result.stage) ||
           typeof result.version !== 'number' ||
           !Number.isSafeInteger(result.version) ||
           result.version < draft.version ||
@@ -2621,7 +2628,7 @@ export class DealerOnboarding {
             !object(result) ||
             Object.keys(result).length !== 3 ||
             typeof result.stage !== 'string' ||
-            !Object.hasOwn(allowed, result.stage) ||
+            !Object.prototype.hasOwnProperty.call(allowed, result.stage) ||
             !Number.isSafeInteger(result.version) ||
             (result.version as number) < version ||
             !Array.isArray(result.actions) ||
@@ -2695,7 +2702,7 @@ export class DealerOnboarding {
         if (
           !object(result) ||
           typeof result.stage !== 'string' ||
-          !Object.hasOwn(allowed, result.stage) ||
+          !Object.prototype.hasOwnProperty.call(allowed, result.stage) ||
           typeof result.version !== 'number' ||
           !Number.isSafeInteger(result.version) ||
           result.version < draft.version ||
@@ -2925,7 +2932,7 @@ export class DealerOnboarding {
           !/^(?:[1-9]\d{0,18}|person[a-zA-Z0-9_-]{1,40})$/.test(person.id)
         )
           return rejectApplicant(503);
-        const kyc = Object.hasOwn(kycByPerson, person.id) ? kycByPerson[person.id] : undefined;
+        const kyc = Object.prototype.hasOwnProperty.call(kycByPerson, person.id) ? kycByPerson[person.id] : undefined;
         if (
           person.name === '' &&
           Object.entries(person).every(([key, value]) => key === 'id' || value == null || value === '')

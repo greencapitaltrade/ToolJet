@@ -1800,7 +1800,7 @@ it('restores VN admission form only after verified sign-in and binds open to sto
 it('binds VN roster state and saves to the verified admitted draft and live version', async () => {
   const fixture = setup();
   const vn = {
-    ...config!,
+    ...signedScope,
     vn: { actorOrganizationId: '39', destinyOrigin: 'http://destiny', viewerUrl: 'https://app.example/view' },
     admission: { issuerOrgId: '39', hmacSecret: 's'.repeat(32) },
   };

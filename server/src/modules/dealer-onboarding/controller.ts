@@ -65,7 +65,9 @@ export class DealerOnboardingController {
     return scope && voltcred ? { ...scope, voltcred } : null;
   }
 
-  private async vnSettings() {
+  private async vnSettings(): Promise<
+    ({ scope: VnDealerScope } & Awaited<ReturnType<typeof createDealerOidcBroker>>) | null
+  > {
     const rawAdmission = this.config.get<string>('TOOLJET_DEALER_VN_ADMISSION');
     if (!process.env.TOOLJET_DEALER_VN_OIDC) return null;
     const legacy =
