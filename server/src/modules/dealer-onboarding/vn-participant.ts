@@ -35,7 +35,7 @@ export function participantEligibilityHeaders(
     'x-gct-participant-issuer-org': issuer,
     'x-gct-participant-issued-at': issuedAt,
     'x-gct-participant-nonce': nonce,
-    'x-gct-participant-signature': mac(key, [
+    'x-participant-eligibility-signature': mac(key, [
       'destiny-vn-participant-eligibility-v1',
       'POST',
       PARTICIPANT_ELIGIBILITY_PATH,

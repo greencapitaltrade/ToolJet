@@ -1867,6 +1867,7 @@ it('binds VN roster state and saves to the verified admitted draft and live vers
       },
     ],
   };
+  const consentId = '67528714-825d-4801-8011-099e4dbe50de';
   const projected = {
     ...safe,
     people: safe.people.map(({ email, ...person }) => ({
@@ -1893,6 +1894,39 @@ it('binds VN roster state and saves to the verified admitted draft and live vers
       input: { version: 3 },
     },
   });
+  fixture.fetcher
+    .mockResolvedValueOnce(Response.json(resume))
+    .mockResolvedValueOnce(
+      Response.json({ ...safe, people: [{ ...safe.people[0], pending_consent: { id: consentId, status: 'pending' } }] })
+    );
+  await expect(fixture.service.rosterVn(vn, { operation: 'state' }, fixture.cookie())).resolves.toMatchObject({
+    people: [{ pending_consent: { id: consentId, status: 'pending' } }],
+  });
+  fixture.fetcher
+    .mockResolvedValueOnce(Response.json(resume))
+    .mockResolvedValueOnce(Response.json({ id: consentId, status: 'accepted', person_id: 'private', version: 4 }));
+  await expect(
+    fixture.service.rosterVn(vn, { operation: 'acceptConsent', version: 3, id: consentId }, fixture.cookie())
+  ).resolves.toEqual({ id: consentId, status: 'accepted', version: 4 });
+  expect(JSON.parse(fixture.fetcher.mock.calls.at(-1)![1].body).input).toEqual({
+    referral_token: referralToken,
+    action: 'person-consent-accept',
+    draft_id: draft.id,
+    input: { version: 3, id: consentId },
+  });
+  fixture.fetcher
+    .mockResolvedValueOnce(Response.json({ ...resume, version: 4 }))
+    .mockResolvedValueOnce(Response.json({ id: consentId, status: 'accepted', version: 4 }));
+  await expect(
+    fixture.service.rosterVn(vn, { operation: 'acceptConsent', version: 3, id: consentId }, fixture.cookie())
+  ).resolves.toEqual({ id: consentId, status: 'accepted', version: 4 });
+  await expect(
+    fixture.service.rosterVn(
+      vn,
+      { operation: 'acceptConsent', version: 3, id: consentId, person_id: 'private' },
+      fixture.cookie()
+    )
+  ).rejects.toMatchObject({ status: 400 });
   fixture.fetcher.mockResolvedValueOnce(Response.json(resume));
   await expect(
     fixture.service.rosterVn(
@@ -2071,6 +2105,44 @@ it('rechecks a participant intent and claims only after its verified callback', 
   expect(fixture.fetcher).toHaveBeenCalledTimes(callsBeforeReview);
   const kycScope = { ...vn, kycOrigin: 'https://identity.example.test' };
   const requestId = '67528714-825d-4801-8011-099e4dbe50de';
+  fixture.fetcher.mockResolvedValueOnce(Response.json({ id: requestId, status: 'pending', person_id: 'private' }));
+  await expect(
+    fixture.service.participantKycVn(kycScope, { action: 'CONSENT_REQUEST', consent: true }, claimed)
+  ).resolves.toEqual({ id: requestId, status: 'pending' });
+  expect(JSON.parse(fixture.fetcher.mock.calls.at(-1)![1].body).input).toEqual({
+    referral_token: referralToken,
+    action: 'person-consent-request',
+    input: { consent: true },
+  });
+  fixture.fetcher.mockResolvedValueOnce(Response.json({ id: requestId, status: 'accepted' }));
+  await expect(
+    fixture.service.participantKycVn(kycScope, { action: 'CONSENT_REQUEST', consent: true }, claimed)
+  ).resolves.toEqual({ id: requestId, status: 'accepted' });
+  fixture.fetcher.mockResolvedValueOnce(Response.json({ id: requestId, status: 'accepted', person_id: 'private' }));
+  await expect(
+    fixture.service.participantKycVn(kycScope, { action: 'CONSENT_STATUS', id: requestId }, claimed)
+  ).resolves.toEqual({ id: requestId, status: 'accepted' });
+  expect(JSON.parse(fixture.fetcher.mock.calls.at(-1)![1].body).input).toEqual({
+    referral_token: referralToken,
+    action: 'person-consent-status',
+    input: { id: requestId },
+  });
+  fixture.fetcher.mockResolvedValueOnce(Response.json({ id: requestId, status: 'withdrawn' }));
+  await expect(
+    fixture.service.participantKycVn(kycScope, { action: 'CONSENT_WITHDRAW', id: requestId }, claimed)
+  ).resolves.toEqual({ id: requestId, status: 'withdrawn' });
+  expect(JSON.parse(fixture.fetcher.mock.calls.at(-1)![1].body).input).toEqual({
+    referral_token: referralToken,
+    action: 'person-consent-withdraw',
+    input: { id: requestId },
+  });
+  await expect(
+    fixture.service.participantKycVn(
+      kycScope,
+      { action: 'CONSENT_REQUEST', consent: true, person_id: 'private' },
+      claimed
+    )
+  ).rejects.toMatchObject({ status: 400 });
   await expect(fixture.service.participantKycVn(kycScope, { action: 'SYNC' }, claimed)).rejects.toThrow();
   await expect(
     fixture.service.participantKycVn(kycScope, { action: 'START', consent: false }, claimed)
@@ -2465,9 +2537,13 @@ it('reports only signed delegated agreement status at the current version', asyn
   const vn = {
     ...signedScope,
     vn: { actorOrganizationId: '39', destinyOrigin: 'http://destiny' },
+    signingOrigin: 'https://sign.example.test',
     admission: { issuerOrgId: '39', hmacSecret: 's'.repeat(32) },
   };
-  const broker = { start: jest.fn().mockResolvedValue('https://auth.example.test'), callback: jest.fn() };
+  const broker = {
+    start: jest.fn().mockResolvedValue('https://auth.example.test'),
+    callback: jest.fn(),
+  };
   await fixture.service.startVn(vn, broker, { referral_token: referralToken }, fixture.setCookie);
   const guest = fixture.cookie()!;
   broker.callback.mockResolvedValue({
@@ -2479,11 +2555,16 @@ it('reports only signed delegated agreement status at the current version', asyn
   await fixture.service.finishVn(vn, broker, { state: 'A'.repeat(43), code: 'code' }, guest, fixture.setCookie);
   fixture.fetcher.mockResolvedValueOnce(Response.json({ draft_id: draft.id, version: 1, status: 'in_progress' }));
   await fixture.service.admitVnAction(vn, { pan: 'AAACA1234F', partner_name: 'Dealer' }, fixture.cookie());
-  const snapshot = { draft_id: draft.id, version: 4, status: 'submitted', intake_stage: 'agreement' };
+  const snapshot = {
+    draft_id: draft.id,
+    version: 4,
+    status: 'submitted',
+    intake_stage: 'agreement',
+  };
   for (const [stage, next] of [
     ['bank_verification_required', 'VERIFY_BANK'],
-    ['agreement_pending', 'FREEZE'],
-    ['signing_pending', null],
+    ['agreement_ready', 'FREEZE'],
+    ['signing_pending', 'REFRESH'],
     ['review_pending', null],
     ['agreement_unavailable', null],
   ]) {
@@ -2496,7 +2577,13 @@ it('reports only signed delegated agreement status at the current version', asyn
     const requests = fixture.fetcher.mock.calls.slice(-2);
     expect(requests.map(([, req]) => JSON.parse(req.body as string).input)).toEqual([
       { referral_token: referralToken, action: 'resume', draft_id: draft.id },
-      { referral_token: referralToken, action: 'completion', draft_id: draft.id, operation: 'STATUS', version: 4 },
+      {
+        referral_token: referralToken,
+        action: 'completion',
+        draft_id: draft.id,
+        operation: 'STATUS',
+        version: 4,
+      },
     ]);
     for (const [, req] of requests)
       expect(req.headers['x-admission-signature']).toBe(
@@ -2514,14 +2601,74 @@ it('reports only signed delegated agreement status at the current version', asyn
         )['x-admission-signature']
       );
   }
-  for (const action of ['SIGN'])
-    await expect(fixture.service.agreementVoltcred(vn as any, { action }, fixture.cookie())).rejects.toMatchObject({
-      status: 409,
-    });
+
+  fixture.fetcher.mockResolvedValueOnce(Response.json(snapshot)).mockResolvedValueOnce(
+    Response.json({
+      stage: 'signing_pending',
+      version: 4,
+      actions: ['REFRESH', 'SIGN'],
+    })
+  );
+  const signStatus = await fixture.service.agreementVoltcred(vn as any, { action: 'STATUS' }, fixture.cookie());
+  expect(signStatus).toEqual({
+    stage: 'signing_pending',
+    action: 'REFRESH',
+    canSign: true,
+    signed: false,
+  });
+  expect(JSON.stringify(signStatus)).not.toContain(referralToken);
+  fixture.fetcher
+    .mockResolvedValueOnce(Response.json(snapshot))
+    .mockResolvedValueOnce(
+      Response.json({
+        stage: 'signing_pending',
+        version: 4,
+        actions: ['REFRESH', 'SIGN'],
+      })
+    )
+    .mockResolvedValueOnce(
+      Response.json({
+        status: 'requested',
+        url: 'https://sign.example.test/session',
+      })
+    );
+  await expect(fixture.service.agreementVoltcred(vn as any, { action: 'SIGN' }, fixture.cookie())).resolves.toEqual({
+    status: 'requested',
+    url: 'https://sign.example.test/session',
+  });
+  expect(JSON.parse(fixture.fetcher.mock.calls.at(-1)![1].body as string).input).toEqual({
+    referral_token: referralToken,
+    action: 'sign',
+    draft_id: draft.id,
+    version: 4,
+  });
+  fixture.fetcher
+    .mockResolvedValueOnce(Response.json(snapshot))
+    .mockResolvedValueOnce(
+      Response.json({
+        stage: 'signing_pending',
+        version: 4,
+        actions: ['REFRESH', 'SIGN'],
+      })
+    )
+    .mockResolvedValueOnce(Response.json({ status: 'requested', url: 'https://evil.test/session' }));
+  await expect(fixture.service.agreementVoltcred(vn as any, { action: 'SIGN' }, fixture.cookie())).rejects.toThrow();
+  fixture.fetcher.mockResolvedValueOnce(
+    Response.json({
+      ...snapshot,
+      draft_id: '99999999-9999-4999-8999-999999999999',
+    })
+  );
+  await expect(fixture.service.agreementVoltcred(vn as any, { action: 'SIGN' }, fixture.cookie())).rejects.toThrow();
   for (const forged of [
-    { stage: 'agreement_pending', version: 4, actions: ['SIGN'] },
-    { stage: 'agreement_pending', version: 4, actions: [], url: 'https://evil.test' },
-    { stage: 'agreement_pending', version: 5, actions: [] },
+    { stage: 'agreement_ready', version: 4, actions: ['SIGN'] },
+    {
+      stage: 'agreement_ready',
+      version: 4,
+      actions: [],
+      url: 'https://evil.test',
+    },
+    { stage: 'agreement_ready', version: 5, actions: [] },
     { stage: 'signing_pending', version: 4, actions: ['SIGN'] },
   ]) {
     fixture.fetcher.mockResolvedValueOnce(Response.json(snapshot)).mockResolvedValueOnce(Response.json(forged));
@@ -2530,8 +2677,8 @@ it('reports only signed delegated agreement status at the current version', asyn
     ).rejects.toThrow();
   }
   for (const [action, stage, nextStage] of [
-    ['VERIFY_BANK', 'bank_verification_required', 'agreement_pending'],
-    ['FREEZE', 'agreement_pending', 'signing_pending'],
+    ['VERIFY_BANK', 'bank_verification_required', 'agreement_ready'],
+    ['FREEZE', 'agreement_ready', 'signing_pending'],
   ]) {
     fixture.fetcher
       .mockResolvedValueOnce(Response.json(snapshot))
@@ -2540,12 +2687,12 @@ it('reports only signed delegated agreement status at the current version', asyn
         Response.json({
           stage: nextStage,
           version: action === 'VERIFY_BANK' ? 4 : 5,
-          actions: nextStage === 'agreement_pending' ? ['FREEZE'] : [],
+          actions: nextStage === 'agreement_ready' ? ['FREEZE'] : ['REFRESH'],
         })
       );
     await expect(fixture.service.agreementVoltcred(vn as any, { action }, fixture.cookie())).resolves.toEqual({
       stage: nextStage,
-      action: nextStage === 'agreement_pending' ? 'FREEZE' : null,
+      action: nextStage === 'agreement_ready' ? 'FREEZE' : 'REFRESH',
       canSign: false,
       signed: false,
     });
@@ -2559,45 +2706,48 @@ it('reports only signed delegated agreement status at the current version', asyn
   }
   fixture.fetcher
     .mockResolvedValueOnce(Response.json(snapshot))
-    .mockResolvedValueOnce(Response.json({ stage: 'signing_pending', version: 4, actions: ['REFRESH'] }))
-    .mockResolvedValueOnce(Response.json({ stage: 'agreement_signed', version: 5, actions: [] }));
+    .mockResolvedValueOnce(
+      Response.json({
+        stage: 'signing_pending',
+        version: 4,
+        actions: ['REFRESH'],
+      })
+    )
+    .mockResolvedValueOnce(Response.json({ stage: 'closed', version: 5, actions: [] }));
   await expect(fixture.service.agreementVoltcred(vn as any, { action: 'REFRESH' }, fixture.cookie())).resolves.toEqual({
-    stage: 'agreement_signed',
+    stage: 'closed',
     action: null,
     canSign: false,
-    signed: true,
+    signed: false,
   });
-  fixture.fetcher
-    .mockResolvedValueOnce(Response.json(snapshot))
-    .mockResolvedValueOnce(Response.json({ stage: 'agreement_signed', version: 4, actions: [] }));
-  await expect(fixture.service.agreementVoltcred(vn as any, { action: 'STATUS' }, fixture.cookie())).resolves.toEqual({
-    stage: 'agreement_signed',
-    action: null,
-    canSign: false,
-    signed: true,
-  });
-  fixture.fetcher
-    .mockResolvedValueOnce(Response.json(snapshot))
-    .mockResolvedValueOnce(Response.json({ stage: 'signing_pending', version: 4, actions: ['REFRESH'] }))
-    .mockResolvedValueOnce(Response.json({ stage: 'completed', version: 5, actions: [] }));
-  await expect(fixture.service.agreementVoltcred(vn as any, { action: 'REFRESH' }, fixture.cookie())).resolves.toEqual({
-    stage: 'completed',
-    action: null,
-    canSign: false,
-    signed: true,
-  });
-  fixture.fetcher.mockResolvedValueOnce(Response.json({ ...snapshot, status: 'approved', intake_stage: 'completed' }));
+  fixture.fetcher.mockResolvedValueOnce(
+    Response.json({
+      ...snapshot,
+      status: 'approved',
+      intake_stage: 'completed',
+    })
+  );
   await expect(fixture.service.agreementVoltcred(vn as any, { action: 'STATUS' }, fixture.cookie())).resolves.toEqual({
     stage: 'completed',
     action: null,
     canSign: false,
     signed: true,
   });
-  fixture.fetcher.mockResolvedValueOnce(Response.json({ ...snapshot, status: 'approved', intake_stage: 'completed' }));
+  fixture.fetcher.mockResolvedValueOnce(
+    Response.json({
+      ...snapshot,
+      status: 'approved',
+      intake_stage: 'completed',
+    })
+  );
   await expect(fixture.service.agreementVoltcred(vn as any, { action: 'REFRESH' }, fixture.cookie())).rejects.toThrow();
-  fixture.fetcher
-    .mockResolvedValueOnce(Response.json(snapshot))
-    .mockResolvedValueOnce(Response.json({ stage: 'agreement_pending', version: 4, actions: ['FREEZE'] }));
+  fixture.fetcher.mockResolvedValueOnce(Response.json(snapshot)).mockResolvedValueOnce(
+    Response.json({
+      stage: 'agreement_ready',
+      version: 4,
+      actions: ['FREEZE'],
+    })
+  );
   await expect(
     fixture.service.agreementVoltcred(vn as any, { action: 'VERIFY_BANK' }, fixture.cookie())
   ).rejects.toMatchObject({ status: 409 });

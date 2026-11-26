@@ -21,10 +21,11 @@ test('participant eligibility is bound to body, issuer and nonce', () => {
     digest,
   ]);
   assert.equal(
-    headers['x-gct-participant-signature'],
+    headers['x-participant-eligibility-signature'],
     createHmac('sha256', 's'.repeat(40)).update(message).digest('hex')
   );
   assert.equal(headers['x-gct-org-id'], '55');
+  assert.equal(headers['x-gct-participant-signature'], undefined);
   assert.throws(() => participantEligibilityHeaders('55', body, 's'.repeat(40), '123456', 'bad'));
 });
 

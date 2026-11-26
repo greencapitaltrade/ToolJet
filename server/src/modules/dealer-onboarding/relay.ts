@@ -1105,7 +1105,15 @@ export class DealerOnboarding {
 
   private async admitVn(scope: VnDealerScope, state: State, key: string, context: Payload) {
     const actor =
-      state.vnParticipant && ['person-claim', 'person-kyc-start', 'person-kyc-sync'].includes(String(context.action))
+      state.vnParticipant &&
+      [
+        'person-claim',
+        'person-kyc-start',
+        'person-kyc-sync',
+        'person-consent-request',
+        'person-consent-withdraw',
+        'person-consent-status',
+      ].includes(String(context.action))
         ? state.vnActor
         : verifiedPublicActor(scope, state);
     if (!state.publicVn || !actor || actor.actorOrgId !== scope.organizationId || !isApplicantReferral(state.referral))
@@ -1158,7 +1166,14 @@ export class DealerOnboarding {
         (input.action === 'START' &&
           Object.keys(input).sort().join(',') === 'action,consent' &&
           input.consent === true) ||
-        (input.action === 'SYNC' && Object.keys(input).join(',') === 'action')
+        (input.action === 'SYNC' && Object.keys(input).join(',') === 'action') ||
+        (input.action === 'CONSENT_REQUEST' &&
+          Object.keys(input).sort().join(',') === 'action,consent' &&
+          input.consent === true) ||
+        (['CONSENT_WITHDRAW', 'CONSENT_STATUS'].includes(String(input.action)) &&
+          Object.keys(input).sort().join(',') === 'action,id' &&
+          typeof input.id === 'string' &&
+          uuidPattern.test(input.id))
       )
     )
       return rejectApplicant(400);
@@ -1171,6 +1186,34 @@ export class DealerOnboarding {
         state.vnActor.actorOrgId !== scope.organizationId
       )
         return rejectApplicant(401);
+      if (
+        input.action === 'CONSENT_REQUEST' ||
+        input.action === 'CONSENT_WITHDRAW' ||
+        input.action === 'CONSENT_STATUS'
+      ) {
+        const request = input.action === 'CONSENT_REQUEST';
+        const result = await this.admitVn(scope, state, scope.admission!.hmacSecret, {
+          action: request
+            ? 'person-consent-request'
+            : input.action === 'CONSENT_STATUS'
+              ? 'person-consent-status'
+              : 'person-consent-withdraw',
+          input: request ? { consent: true } : { id: input.id },
+        });
+        if (
+          !object(result) ||
+          typeof result.id !== 'string' ||
+          !uuidPattern.test(result.id) ||
+          !(request
+            ? ['pending', 'accepted', 'withdrawn'].includes(String(result.status))
+            : input.action === 'CONSENT_WITHDRAW'
+              ? result.status === 'withdrawn'
+              : ['pending', 'accepted', 'withdrawn', 'expired'].includes(String(result.status))) ||
+          (!request && result.id !== input.id)
+        )
+          return rejectApplicant(503);
+        return { id: result.id, status: result.status };
+      }
       if (input.action === 'SYNC' && (!state.vnParticipantKycId || !uuidPattern.test(state.vnParticipantKycId)))
         return rejectApplicant(409);
       const result = await this.admitVn(
@@ -1592,21 +1635,25 @@ export class DealerOnboarding {
       Buffer.byteLength(scope.admission.hmacSecret) < 32
     )
       return rejectApplicant(503);
-    if (!object(input) || !['state', 'save', 'issue', 'revoke'].includes(input.operation as string))
+    if (!object(input) || !['state', 'save', 'issue', 'revoke', 'acceptConsent'].includes(input.operation as string))
       return rejectApplicant(400);
+    const accept = input.operation === 'acceptConsent';
     const save = input.operation === 'save';
     const invite = input.operation === 'issue' || input.operation === 'revoke';
-    const keys = save
-      ? ['operation', 'version', 'details', 'people']
-      : invite
-        ? ['operation', 'version', 'slot_id']
-        : ['operation'];
+    const keys = accept
+      ? ['operation', 'version', 'id']
+      : save
+        ? ['operation', 'version', 'details', 'people']
+        : invite
+          ? ['operation', 'version', 'slot_id']
+          : ['operation'];
     if (
-      invite &&
+      (invite || accept) &&
       (!Number.isSafeInteger(input.version) ||
         (input.version as number) < 1 ||
-        typeof input.slot_id !== 'string' ||
-        !/^person[a-f0-9]{32}$/.test(input.slot_id))
+        (accept
+          ? typeof input.id !== 'string' || !uuidPattern.test(input.id)
+          : typeof input.slot_id !== 'string' || !/^person[a-f0-9]{32}$/.test(input.slot_id)))
     )
       return rejectApplicant(400);
     if (Object.keys(input).length !== keys.length || Object.keys(input).some((k) => !keys.includes(k)))
@@ -1659,6 +1706,21 @@ export class DealerOnboarding {
       )
         return rejectApplicant(409);
       const version = current.version as number;
+      if (accept) {
+        const response = await this.admitVn(scope, state, scope.admission!.hmacSecret, {
+          action: 'person-consent-accept',
+          draft_id: draftId,
+          input: { version: input.version, id: input.id },
+        });
+        if (
+          !object(response) ||
+          response.id !== input.id ||
+          response.status !== 'accepted' ||
+          (response.version !== version && response.version !== version + 1)
+        )
+          return rejectApplicant(503);
+        return { id: response.id, status: response.status, version: response.version };
+      }
       if (invite) {
         const response = await this.admitVn(scope, state, scope.admission!.hmacSecret, {
           action: 'person-invite',
@@ -1729,11 +1791,29 @@ export class DealerOnboarding {
         object(person) ? Object.fromEntries(personKeys.map((k) => [k, person[k]])) : person
       );
       if (!detailsValid(details) || !peopleValid(people, false)) return rejectApplicant(503);
+      const pending = result.people.map((person) => {
+        if (!object(person) || person.pending_consent == null) return undefined;
+        const consent = person.pending_consent;
+        if (
+          !object(consent) ||
+          typeof consent.id !== 'string' ||
+          !uuidPattern.test(consent.id) ||
+          consent.status !== 'pending'
+        )
+          return rejectApplicant(503);
+        return { id: consent.id, status: consent.status };
+      });
       return {
         version: result.version,
         entity: result.entity,
         details,
-        people: people.map((p: any) => ({ slot_id: p.slot_id, name: p.name, din: p.din, hasEmail: Boolean(p.email) })),
+        people: people.map((p: any, i: number) => ({
+          slot_id: p.slot_id,
+          name: p.name,
+          din: p.din,
+          hasEmail: Boolean(p.email),
+          ...(pending[i] && { pending_consent: pending[i] }),
+        })),
       };
     });
   }
@@ -2582,7 +2662,6 @@ export class DealerOnboarding {
       const state = await this.sessions.get(key);
       if (!state || !state.referral) return rejectApplicant(401);
       if ('vn' in scope && scope.admission) {
-        if (!['STATUS', 'VERIFY_BANK', 'FREEZE', 'REFRESH'].includes(action)) return rejectApplicant(409);
         if (
           scope.admission.issuerOrgId !== scope.organizationId ||
           scope.vn.actorOrganizationId !== scope.organizationId ||
@@ -2605,7 +2684,12 @@ export class DealerOnboarding {
           return rejectApplicant(409);
         if (snapshot.status === 'approved' && snapshot.intake_stage === 'completed') {
           if (action !== 'STATUS') return rejectApplicant(409);
-          return { stage: 'completed', action: null, canSign: false, signed: true };
+          return {
+            stage: 'completed',
+            action: null,
+            canSign: false,
+            signed: true,
+          };
         }
         if (snapshot.status !== 'submitted' || snapshot.intake_stage !== 'agreement') return rejectApplicant(409);
         const send = async (operation: string, version: number) => {
@@ -2617,10 +2701,9 @@ export class DealerOnboarding {
           });
           const allowed: Record<string, string | null> = {
             bank_verification_required: 'VERIFY_BANK',
-            agreement_pending: 'FREEZE',
-            signing_pending: null,
-            agreement_signed: null,
-            completed: null,
+            agreement_ready: 'FREEZE',
+            signing_pending: 'REFRESH',
+            closed: null,
             review_pending: null,
             agreement_unavailable: null,
           };
@@ -2633,7 +2716,8 @@ export class DealerOnboarding {
             (result.version as number) < version ||
             !Array.isArray(result.actions) ||
             (result.stage === 'signing_pending'
-              ? !(result.actions.length === 0 || (result.actions.length === 1 && result.actions[0] === 'REFRESH'))
+              ? !(result.actions.length === 1 && result.actions[0] === 'REFRESH') &&
+                !(result.actions.length === 2 && result.actions[0] === 'REFRESH' && result.actions[1] === 'SIGN')
               : result.actions.length !== (allowed[result.stage] ? 1 : 0) ||
                 (allowed[result.stage] && result.actions[0] !== allowed[result.stage])) ||
             (operation === 'REFRESH' && (result.version as number) > version + 1)
@@ -2642,7 +2726,11 @@ export class DealerOnboarding {
           return {
             stage: result.stage,
             version: result.version as number,
-            action: result.stage === 'signing_pending' && result.actions.length ? 'REFRESH' : allowed[result.stage],
+            action: allowed[result.stage],
+            canSign:
+              result.stage === 'signing_pending' &&
+              result.actions.length === 2 &&
+              Boolean(exactHttpsOrigin(scope.signingOrigin)),
           };
         };
         const current = await send('STATUS', snapshot.version as number);
@@ -2651,16 +2739,30 @@ export class DealerOnboarding {
           return {
             stage: current.stage,
             action: current.action,
-            canSign: false,
-            signed: ['agreement_signed', 'completed'].includes(current.stage),
+            canSign: current.canSign,
+            signed: false,
           };
+        if (action === 'SIGN') {
+          if (!current.canSign) return rejectApplicant(409);
+          const result = await this.admitVn(scope, state, scope.admission.hmacSecret, {
+            action: 'sign',
+            draft_id: draftId,
+            version: current.version,
+          });
+          if (!object(result) || Object.keys(result).length !== 2 || result.status !== 'requested')
+            return rejectApplicant(503);
+          return {
+            status: 'requested',
+            url: dealerProviderRedirect(result.url, scope.signingOrigin),
+          };
+        }
         if (current.action !== action) return rejectApplicant(409);
         const result = await send(action, current.version);
         return {
           stage: result.stage,
           action: result.action,
-          canSign: false,
-          signed: ['agreement_signed', 'completed'].includes(result.stage),
+          canSign: result.canSign,
+          signed: false,
         };
       }
       if (!('ownerHmacKey' in scope)) return rejectApplicant(503);
