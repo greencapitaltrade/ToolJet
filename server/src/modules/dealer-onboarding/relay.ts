@@ -22,7 +22,12 @@ import {
   normalizeApplicantPhone,
   rejectApplicant,
 } from '../applicant-session/fury';
-import { ApplicantRedis, ApplicantSessions, newApplicantHandle } from '../applicant-session/store';
+import {
+  ApplicantRedis,
+  ApplicantSessions,
+  newApplicantHandle,
+  SignedAdmissionScope,
+} from '../applicant-session/store';
 import { dealerDossierInput, requestDealerDossier } from './dossier';
 import { dealerProviderRedirect, parseDealerParticipantConfig } from './participant';
 import { dealerSelfieData } from './selfie';
@@ -79,10 +84,10 @@ type PublicActorScope = {
   destinyOrigin: string;
   viewerUrl?: string;
 };
-export type VnDealerScope = DealerScope & {
-  vn: PublicActorScope;
-  admission?: { issuerOrgId: string; hmacSecret: string };
-};
+export type VnDealerScope = (
+  | (DealerScope & { admission?: never })
+  | (SignedAdmissionScope & { admission: { issuerOrgId: string; hmacSecret: string }; signingOrigin?: string })
+) & { vn: PublicActorScope };
 type PublicDealerScope = VoltcredDealerScope | VnDealerScope;
 type PublicOwnerScope = PublicDealerScope & {
   ownerHmacKey: string;
@@ -566,7 +571,7 @@ export class DealerOnboarding {
   }
 
   private async eligibleVn(scope: VnDealerScope, referral: string) {
-    if (!scope.admission) return this.eligible(scope, referral);
+    if (!('namespace' in scope)) return this.eligible(scope, referral);
     if (scope.admission.issuerOrgId !== scope.organizationId) return false;
     try {
       const response = await this.fetcher(`${scope.vn.destinyOrigin}/v1/channel-partners/referrals/eligibility`, {

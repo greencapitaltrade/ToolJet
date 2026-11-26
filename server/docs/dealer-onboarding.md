@@ -173,15 +173,22 @@ and decisions.
 The dedicated dossier and identity routes collect execution details and the
 owner's own identity evidence.
 
-### Isolated VN delegated admission
+### Signed VN delegated admission
 
-The public VN viewer remains disabled until delegated dossier reads and actions
-are implemented and verified. For isolated admission testing only, configure
-`TOOLJET_DEALER_VN_ADMISSION` as a managed server-side JSON secret with exactly
-`issuerOrgId` and `hmacSecret`. The issuer must equal the configured VN OIDC
-and dealer organization; the HMAC secret must contain at least 32 UTF-8 bytes
-and match Destiny's VN admission secret. No browser chooses the issuer,
-Destiny origin, actor, or referral. Malformed settings disable the VN route.
+Set `TOOLJET_HOST` to the canonical HTTPS ToolJet origin. In the managed
+`TOOLJET_DEALER_VN_OIDC` configuration, use this origin for the viewer and the
+exact `/api/dealer-onboarding/vn/callback` redirect. Set
+`TOOLJET_DEALER_VN_ADMISSION` as a managed JSON secret with `issuerOrgId` and
+`hmacSecret`. The issuer organization must equal the broker registration’s
+organization. The HMAC secret must contain at least 32 UTF-8 bytes and match
+Destiny’s VN admission secret. ToolJet derives a dedicated Redis session key
+for this mode. The legacy phone and participant settings apply to their own
+routes.
+
+For Aadhaar signing, set `TOOLJET_DEALER_SIGNING_ORIGIN` to the exact HTTPS
+origin of the approved signing provider. The signer action stays unavailable
+until that origin is configured. Verify the configured flow in preview before
+publishing the public viewer.
 
 After the existing verified VN sign-in, `POST /api/dealer-onboarding/vn/admission`
 accepts exactly `pan`, `partner_name`, and optional `gst`, `mobile`, `firm_type`,

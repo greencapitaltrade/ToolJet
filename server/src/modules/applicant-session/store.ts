@@ -7,6 +7,14 @@ const unlock = "if redis.call('GET',KEYS[1])==ARGV[1] then return redis.call('DE
 const rotate =
   "if redis.call('EXISTS',KEYS[1])~=1 or not redis.call('SET',KEYS[2],ARGV[1],'EX',ARGV[2],'NX') then return 0 end; return redis.call('DEL',KEYS[1])";
 
+export type SignedAdmissionScope = {
+  origin: string;
+  organizationId: string;
+  sessionKey: string;
+  namespace: 'signed-admission';
+};
+export type ApplicantSessionScope = ApplicantScope | SignedAdmissionScope;
+
 export type ApplicantRedis = { call(command: string, ...args: string[]): Promise<unknown> };
 export const newApplicantHandle = () => randomBytes(32).toString('base64url');
 
@@ -16,16 +24,20 @@ export class ApplicantSessions<T> {
     private readonly purpose: ApplicantPurpose
   ) {}
 
-  private scopedKey(scope: ApplicantScope, kind: string, id: string) {
-    const digest = createHmac('sha256', scope.lspSecret).update(scope.origin).update('\0').update(id).digest('hex');
-    return `${this.purpose}-onboarding:{${scope.organizationId}}:${kind}:${digest}`;
+  private scopedKey(scope: ApplicantSessionScope, kind: string, id: string) {
+    const signed = 'namespace' in scope;
+    if (signed && (!/^[1-9][0-9]{0,18}$/.test(scope.organizationId) || !scope.sessionKey)) return rejectApplicant(503);
+    const secret = signed ? scope.sessionKey : scope.lspSecret;
+    const digest = createHmac('sha256', secret).update(scope.origin).update('\0').update(id).digest('hex');
+    const domain = signed ? scope.namespace : 'onboarding';
+    return `${this.purpose}-${domain}:{${scope.organizationId}}:${kind}:${digest}`;
   }
 
-  key(scope: ApplicantScope, id: string | undefined) {
+  key(scope: ApplicantSessionScope, id: string | undefined) {
     return id && sessionPattern.test(id) ? this.scopedKey(scope, 'state', id) : undefined;
   }
 
-  async rate(scope: ApplicantScope, bucket: string, subject: string, limit: number, seconds: number) {
+  async rate(scope: ApplicantSessionScope, bucket: string, subject: string, limit: number, seconds: number) {
     const result = await this.redis.call(
       'EVAL',
       increment,
@@ -36,7 +48,7 @@ export class ApplicantSessions<T> {
     if (typeof result !== 'number' || result > limit) rejectApplicant(429);
   }
 
-  async start(scope: ApplicantScope, state: T, seconds: number) {
+  async start(scope: ApplicantSessionScope, state: T, seconds: number) {
     const id = newApplicantHandle();
     const key = this.scopedKey(scope, 'state', id);
     if ((await this.redis.call('SET', key, JSON.stringify(state), 'EX', String(seconds), 'NX')) !== 'OK')
@@ -53,7 +65,7 @@ export class ApplicantSessions<T> {
     if ((await this.redis.call('SET', key, JSON.stringify(state), 'XX', 'KEEPTTL')) !== 'OK') rejectApplicant(409);
   }
 
-  async rotate(scope: ApplicantScope, previousKey: string, state: T, seconds: number) {
+  async rotate(scope: ApplicantSessionScope, previousKey: string, state: T, seconds: number) {
     const id = newApplicantHandle();
     const key = this.scopedKey(scope, 'state', id);
     if ((await this.redis.call('EVAL', rotate, '2', previousKey, key, JSON.stringify(state), String(seconds))) !== 1)

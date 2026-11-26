@@ -1,4 +1,5 @@
 import { createHmac } from 'node:crypto';
+import { ApplicantSessions } from '../../../../src/modules/applicant-session/store';
 /** @group platform */
 import { DealerOnboarding, parseDealerOnboardingConfig } from '../../../../src/modules/dealer-onboarding/relay';
 import { parseDealerParticipantConfig } from '../../../../src/modules/dealer-onboarding/participant';
@@ -17,6 +18,12 @@ const config = parseDealerOnboardingConfig(
     lspSecret: 'synthetic-service-credential',
   })
 );
+const signedScope = {
+  origin: 'https://app.example.test',
+  organizationId: '39',
+  namespace: 'signed-admission' as const,
+  sessionKey: 'synthetic-signed-session-key',
+};
 const referralToken = `v3.${'a'.repeat(45)}`;
 const draft = {
   id: '67528714-825d-4801-b011-099e4dbe50de',
@@ -1402,10 +1409,42 @@ it('bounds owner selfie transport and refuses even to parse it until the exact c
   });
 });
 
+it('derives separate Redis session keys for signed and legacy scopes', () => {
+  const sessions = new ApplicantSessions({ call: jest.fn() }, 'dealer');
+  const id = 'A'.repeat(43);
+  const digest = (secret: string) =>
+    createHmac('sha256', secret).update(signedScope.origin).update('\0').update(id).digest('hex');
+  expect(sessions.key(signedScope, id)).toBe(`dealer-signed-admission:{39}:state:${digest(signedScope.sessionKey)}`);
+  expect(sessions.key(config!, id)).toBe(`dealer-onboarding:{39}:state:${digest(config!.lspSecret)}`);
+  expect(sessions.key(signedScope, id)).not.toBe(sessions.key(config!, id));
+});
+
+it('does not accept a signed admission guest in the legacy VN namespace', async () => {
+  const fixture = setup();
+  const signed = {
+    ...signedScope,
+    vn: { actorOrganizationId: '39', destinyOrigin: 'http://destiny' },
+    admission: { issuerOrgId: '39', hmacSecret: 's'.repeat(32) },
+  };
+  const legacy = { ...config!, vn: { actorOrganizationId: '39', destinyOrigin: 'http://destiny' } };
+  const broker = { start: jest.fn().mockResolvedValue('https://auth.example.test'), callback: jest.fn() };
+  await fixture.service.startVn(signed, broker, { referral_token: referralToken }, fixture.setCookie);
+  await expect(
+    fixture.service.finishVn(
+      legacy,
+      broker,
+      { state: 'A'.repeat(43), code: 'code' },
+      fixture.cookie(),
+      fixture.setCookie
+    )
+  ).rejects.toThrow();
+  expect(broker.callback).not.toHaveBeenCalled();
+});
+
 it('pins a verified VN admission request and recovers its receipt on retry', async () => {
   const fixture = setup();
   const vn = {
-    ...config!,
+    ...signedScope,
     vn: { actorOrganizationId: '39', destinyOrigin: 'http://destiny' },
     admission: { issuerOrgId: '39', hmacSecret: 's'.repeat(32) },
   };
@@ -1468,7 +1507,7 @@ it('rejects VN admission configurations that are absent, foreign or malformed', 
 it('resumes only the verified session admission receipt and projects the status', async () => {
   const fixture = setup();
   const vn = {
-    ...config!,
+    ...signedScope,
     vn: { actorOrganizationId: '39', destinyOrigin: 'http://destiny' },
     admission: { issuerOrgId: '39', hmacSecret: 's'.repeat(32) },
   };
@@ -1582,7 +1621,7 @@ it('resumes only the verified session admission receipt and projects the status'
 it('binds VN financial actions to the admitted session and pins retries and opaque options', async () => {
   const fixture = setup();
   const vn = {
-    ...config!,
+    ...signedScope,
     vn: { actorOrganizationId: '39', destinyOrigin: 'http://destiny' },
     admission: { issuerOrgId: '39', hmacSecret: 's'.repeat(32) },
     bankConsentOrigin: 'https://consent.example.test',
@@ -1670,7 +1709,7 @@ it('binds VN financial actions to the admitted session and pins retries and opaq
 it('projects only masked GST options from the signed financial relay', async () => {
   const fixture = setup();
   const vn = {
-    ...config!,
+    ...signedScope,
     vn: { actorOrganizationId: '39', destinyOrigin: 'http://destiny' },
     admission: { issuerOrgId: '39', hmacSecret: 's'.repeat(32) },
     bankConsentOrigin: 'https://consent.example.test',
@@ -1712,7 +1751,7 @@ it('projects only masked GST options from the signed financial relay', async () 
 it('restores VN admission form only after verified sign-in and binds open to stored PAN', async () => {
   const fixture = setup();
   const vn = {
-    ...config!,
+    ...signedScope,
     vn: { actorOrganizationId: '39', destinyOrigin: 'http://destiny' },
     admission: { issuerOrgId: '39', hmacSecret: 's'.repeat(32) },
   };
@@ -1945,7 +1984,7 @@ it('rechecks a participant intent and claims only after its verified callback', 
   const jti = 'j'.repeat(43);
   const commitment = 'c'.repeat(64);
   const vn = {
-    ...config!,
+    ...signedScope,
     vn: { actorOrganizationId: '39', destinyOrigin: 'http://destiny' },
     admission: { issuerOrgId: '39', hmacSecret: 'a'.repeat(40) },
   };
@@ -2122,7 +2161,7 @@ it.each([{}, { status: 'pending' }, { status: 'claimed', identity: 'leak' }])(
     const jti = 'j'.repeat(43);
     const commitment = 'c'.repeat(64);
     const vn = {
-      ...config!,
+      ...signedScope,
       vn: { actorOrganizationId: '39', destinyOrigin: 'http://destiny' },
       admission: { issuerOrgId: '39', hmacSecret: 'a'.repeat(40) },
     };
@@ -2169,7 +2208,7 @@ it.each([{}, { status: 'pending' }, { status: 'claimed', identity: 'leak' }])(
 it('binds delegated evidence to the owner draft and signs the exact bytes and metadata', async () => {
   const fixture = setup();
   const vn = {
-    ...config!,
+    ...signedScope,
     vn: { actorOrganizationId: '39', destinyOrigin: 'http://destiny' },
     admission: { issuerOrgId: '39', hmacSecret: 's'.repeat(32) },
   };
@@ -2244,7 +2283,7 @@ it('binds delegated evidence to the owner draft and signs the exact bytes and me
 it('routes VN review through the signed admitted owner and current case version', async () => {
   const fixture = setup();
   const vn = {
-    ...config!,
+    ...signedScope,
     vn: { actorOrganizationId: '39', destinyOrigin: 'http://destiny' },
     admission: { issuerOrgId: '39', hmacSecret: 's'.repeat(32) },
   };
@@ -2336,7 +2375,7 @@ it('routes VN review through the signed admitted owner and current case version'
 it('uses the signed bound admission execution snapshot and rejects stale versions', async () => {
   const fixture = setup();
   const vn = {
-    ...config!,
+    ...signedScope,
     vn: { actorOrganizationId: '39', destinyOrigin: 'http://destiny' },
     admission: { issuerOrgId: '39', hmacSecret: 's'.repeat(32) },
   };
@@ -2428,7 +2467,7 @@ it('uses the signed bound admission execution snapshot and rejects stale version
 it('reports only signed delegated agreement status at the current version', async () => {
   const fixture = setup();
   const vn = {
-    ...config!,
+    ...signedScope,
     vn: { actorOrganizationId: '39', destinyOrigin: 'http://destiny' },
     admission: { issuerOrgId: '39', hmacSecret: 's'.repeat(32) },
   };
@@ -2581,7 +2620,7 @@ it('isolates signer callback from owner and participant sessions', async () => {
     .update('signer@example.test')
     .digest('hex');
   const vn = {
-    ...config!,
+    ...signedScope,
     vn: { actorOrganizationId: '39', destinyOrigin: 'http://destiny' },
     admission: { issuerOrgId: '39', hmacSecret: 'a'.repeat(40) },
   };
@@ -2725,7 +2764,7 @@ it('redacts signer invitation URLs and private signer request credentials from t
 it('uses private Destiny eligibility for signed VN owner start and callback', async () => {
   const fixture = setup();
   const vn = {
-    ...config!,
+    ...signedScope,
     vn: { actorOrganizationId: '39', destinyOrigin: 'http://destiny' },
     admission: { issuerOrgId: '39', hmacSecret: 'x'.repeat(32) },
   };
@@ -2764,7 +2803,7 @@ it.each([
 ])('rejects invalid private eligibility %j', async (result) => {
   const fixture = setup();
   const vn = {
-    ...config!,
+    ...signedScope,
     vn: { actorOrganizationId: '39', destinyOrigin: 'http://destiny' },
     admission: { issuerOrgId: '39', hmacSecret: 'x'.repeat(32) },
   };

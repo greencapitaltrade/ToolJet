@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { Controller, Get, Post, Req, Res, UseGuards } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type { Response } from 'express';
@@ -65,29 +66,40 @@ export class DealerOnboardingController {
   }
 
   private async vnSettings() {
-    const scope = parseDealerOnboardingConfig(this.config.get<string>(DEALER_ONBOARDING_ENV));
-    if (!scope || !process.env.TOOLJET_DEALER_VN_OIDC) return null;
+    const rawAdmission = this.config.get<string>('TOOLJET_DEALER_VN_ADMISSION');
+    if (!process.env.TOOLJET_DEALER_VN_OIDC) return null;
+    const legacy =
+      rawAdmission === undefined ? parseDealerOnboardingConfig(this.config.get<string>(DEALER_ONBOARDING_ENV)) : null;
     try {
       this.vnBroker ??= createDealerOidcBroker(process.env, { redis: this.connection });
       const { broker, config } = await this.vnBroker;
       const destinyOrigin = privateServiceOrigin(config.destinyOrigin);
+      const admission = parseVnAdmissionConfig(rawAdmission, config.organizationId);
+      if (rawAdmission !== undefined && !admission) return null;
+      const origin = admission ? this.config.get<string>('TOOLJET_HOST') : legacy?.origin;
       if (
+        !origin ||
+        !exactHttpsOrigin(origin) ||
         !destinyOrigin ||
         !privateServiceOrigin(config.thorOrigin) ||
-        config.organizationId !== scope.organizationId ||
-        config.redirectUri !== new URL(vnCallbackPath, scope.origin).href ||
-        new URL(config.viewerUrl).origin !== scope.origin
+        config.redirectUri !== new URL(vnCallbackPath, origin).href ||
+        new URL(config.viewerUrl).origin !== origin
       )
         return null;
-      const rawAdmission = this.config.get<string>('TOOLJET_DEALER_VN_ADMISSION');
-      const admission = parseVnAdmissionConfig(rawAdmission, scope.organizationId);
-      if (rawAdmission !== undefined && !admission) return null;
-      const current: VnDealerScope = {
-        ...scope,
-        vn: { actorOrganizationId: config.organizationId, destinyOrigin, viewerUrl: config.viewerUrl },
-        ...(admission && { admission }),
+      const vn = { actorOrganizationId: config.organizationId, destinyOrigin, viewerUrl: config.viewerUrl };
+      if (!admission) {
+        if (!legacy || config.organizationId !== legacy.organizationId) return null;
+        return { scope: { ...legacy, vn }, broker, config };
+      }
+      const scope: VnDealerScope = {
+        origin,
+        organizationId: config.organizationId,
+        namespace: 'signed-admission',
+        sessionKey: createHmac('sha256', admission.hmacSecret).update('tooljet-vn-session-v1').digest('hex'),
+        admission,
+        vn,
       };
-      return { scope: current, broker, config };
+      return { scope, broker, config };
     } catch {
       this.vnBroker = undefined;
       return null;
@@ -215,13 +227,7 @@ export class DealerOnboardingController {
   @InitFeature(FEATURE_KEY.DEALER_ONBOARDING)
   async signVnSigner(@Req() req: ApplicantHttpRequest, @Res() res: Response) {
     const vn = await this.vnSettings();
-    const participant = parseDealerParticipantConfig(this.config.get<string>(DEALER_PARTICIPANT_ENV));
-    const signingOrigin =
-      participant?.origin === vn?.scope.origin &&
-      participant.organizationId === vn?.scope.organizationId &&
-      participant.furyUrl === vn?.scope.furyUrl
-        ? participant.signingOrigin
-        : undefined;
+    const signingOrigin = this.config.get<string>('TOOLJET_DEALER_SIGNING_ORIGIN');
     const scope = vn?.scope.admission && exactHttpsOrigin(signingOrigin) ? { ...vn.scope, signingOrigin } : null;
     return handleApplicantRequest(req, res, scope, 'dealer', (settings, input, id) =>
       this.relay.signVnSigner(
