@@ -14,7 +14,14 @@ export type DealerOidcConfig = {
   redirectUri: string;
   intentSecret: string;
 };
-type Pending = { continuation: string; nonce: string; verifier: string; guest: string; participantJti?: string };
+type Pending = {
+  continuation: string;
+  nonce: string;
+  verifier: string;
+  guest: string;
+  participantJti?: string;
+  signerJti?: string;
+};
 type Store = {
   put(state: string, value: Pending): Promise<void>;
   take(state: string, guest: string): Promise<Pending | null | undefined>;
@@ -74,13 +81,34 @@ export class DealerOidcBroker {
   ) {
     if (typeof participantToken !== 'string' || !participantToken || participantToken.length > 4096)
       throw new Error('Invalid participant');
-    return this.startIntent(continuation, guest, { participantToken, eligibility });
+    return this.startIntent(continuation, guest, {
+      participantToken,
+      eligibility,
+    });
+  }
+
+  async startSigner(
+    continuation: string,
+    guest: string,
+    signerToken: string,
+    eligibility: (jti: string, token: string) => Promise<string>
+  ) {
+    if (typeof signerToken !== 'string' || !signerToken || signerToken.length > 4096) throw new Error('Invalid signer');
+    return this.startIntent(continuation, guest, {
+      participantToken: signerToken,
+      eligibility,
+      signer: true,
+    });
   }
 
   private async startIntent(
     continuation: string,
     guest: string,
-    participant?: { participantToken: string; eligibility: (jti: string, token: string) => Promise<string> }
+    participant?: {
+      participantToken: string;
+      eligibility: (jti: string, token: string) => Promise<string>;
+      signer?: boolean;
+    }
   ) {
     if (typeof guest !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(guest)) throw new Error('Invalid guest');
     if (typeof continuation !== 'string' || !continuation || continuation.length > 256)
@@ -96,7 +124,11 @@ export class DealerOidcBroker {
     const payload = Buffer.from(
       JSON.stringify({
         v: 1,
-        purpose: participant ? 'vn_delegated_person_enrollment' : 'vn_dealer_enrollment',
+        purpose: participant
+          ? participant.signer
+            ? 'vn_delegated_agreement_signing'
+            : 'vn_delegated_person_enrollment'
+          : 'vn_dealer_enrollment',
         client_id: this.config.clientId,
         jti,
         iat,
@@ -111,7 +143,7 @@ export class DealerOidcBroker {
       nonce,
       verifier,
       guest: hash(guest),
-      ...(participant && { participantJti: jti }),
+      ...(participant && (participant.signer ? { signerJti: jti } : { participantJti: jti })),
     });
     return this.client.authorizationUrl({
       scope: 'openid email',
@@ -164,6 +196,7 @@ export class DealerOidcBroker {
       organizationId: this.config.organizationId,
       email: claims.email,
       ...(pending.participantJti && { participantJti: pending.participantJti }),
+      ...(pending.signerJti && { signerJti: pending.signerJti }),
     };
   }
 }
@@ -171,7 +204,9 @@ export class DealerOidcBroker {
 const takeOnce =
   "local v=redis.call('GET',KEYS[1]); if not v then return nil end; local ok,p=pcall(cjson.decode,v); if not ok or p.guest~=ARGV[1] then return nil end; redis.call('DEL',KEYS[1]); return v";
 export class DealerOidcRedisStore {
-  private readonly redis: { call(command: string, ...args: string[]): Promise<unknown> };
+  private readonly redis: {
+    call(command: string, ...args: string[]): Promise<unknown>;
+  };
   private readonly organizationId: string;
   private readonly secret: string;
   constructor(

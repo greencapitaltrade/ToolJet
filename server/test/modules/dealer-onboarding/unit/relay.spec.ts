@@ -2,7 +2,12 @@ import { createHmac } from 'node:crypto';
 /** @group platform */
 import { DealerOnboarding, parseDealerOnboardingConfig } from '../../../../src/modules/dealer-onboarding/relay';
 import { parseDealerParticipantConfig } from '../../../../src/modules/dealer-onboarding/participant';
-import { isApplicantOnboardingRequest, sanitizeOAuthRequest } from '../../../../src/otel/sanitize';
+import {
+  isApplicantOnboardingRequest,
+  sanitizeOAuthRequest,
+  sanitizeOAuthUrl,
+  sanitizeTraceObject,
+} from '../../../../src/otel/sanitize';
 
 const config = parseDealerOnboardingConfig(
   JSON.stringify({
@@ -1770,14 +1775,67 @@ it('binds VN roster state and saves to the verified admitted draft and live vers
   await fixture.service.finishVn(vn, broker, { state: 'A'.repeat(43), code: 'code' }, guest, fixture.setCookie);
   fixture.fetcher.mockResolvedValueOnce(Response.json({ draft_id: draft.id, version: 1, status: 'in_progress' }));
   await fixture.service.admitVnAction(vn, { pan: 'AAACA1234F', partner_name: 'Dealer' }, fixture.cookie());
+  const slotId = 'person' + 'a'.repeat(32);
+  fixture.fetcher.mockResolvedValueOnce(Response.json({ signers: [{ slot_id: slotId, name: 'A' }] }));
+  await expect(
+    fixture.service.inviteVnSigner(vn, { operation: 'list', version: 3 }, fixture.cookie())
+  ).resolves.toEqual({ signers: [{ slot_id: slotId, name: 'A' }] });
+  expect(JSON.parse(fixture.fetcher.mock.calls.at(-1)![1].body)).toEqual({
+    input: {
+      referral_token: referralToken,
+      action: 'signer-invite',
+      draft_id: draft.id,
+      operation: 'list',
+      input: { version: 3 },
+    },
+  });
+  fixture.fetcher.mockResolvedValueOnce(Response.json({ url: `https://app.example/view?signing=${referralToken}` }));
+  await expect(
+    fixture.service.inviteVnSigner(vn, { operation: 'issue', version: 3, slot_id: slotId }, fixture.cookie())
+  ).resolves.toEqual({
+    url: `https://app.example/view?signing=${referralToken}`,
+  });
+  fixture.fetcher.mockResolvedValueOnce(
+    Response.json({
+      url: `https://evil.example/view?signing=${referralToken}`,
+    })
+  );
+  await expect(
+    fixture.service.inviteVnSigner(vn, { operation: 'issue', version: 3, slot_id: slotId }, fixture.cookie())
+  ).rejects.toThrow();
+  await expect(
+    fixture.service.inviteVnSigner(
+      vn,
+      { operation: 'issue', version: 3, slot_id: slotId, draft_id: draft.id },
+      fixture.cookie()
+    )
+  ).rejects.toThrow();
   const safe = {
     version: 3,
     entity: 'company',
     details: { mobile: '9999900001', premises: 'owned', cin: 'CIN', llpin: '' },
-    people: [{ slot_id: 'person' + 'a'.repeat(32), name: 'A', email: 'a@example.test', din: '12345678' }],
+    people: [
+      {
+        slot_id: 'person' + 'a'.repeat(32),
+        name: 'A',
+        email: 'a@example.test',
+        din: '12345678',
+      },
+    ],
   };
-  const projected = { ...safe, people: safe.people.map(({ email, ...person }) => ({ ...person, hasEmail: true })) };
-  const resume = { draft_id: draft.id, version: 3, status: 'in_progress', intake_stage: 'people' };
+  const projected = {
+    ...safe,
+    people: safe.people.map(({ email, ...person }) => ({
+      ...person,
+      hasEmail: true,
+    })),
+  };
+  const resume = {
+    draft_id: draft.id,
+    version: 3,
+    status: 'in_progress',
+    intake_stage: 'people',
+  };
   fixture.fetcher
     .mockResolvedValueOnce(Response.json(resume))
     .mockResolvedValueOnce(Response.json({ ...safe, private: 'hidden' }));
@@ -2420,7 +2478,7 @@ it('reports only signed delegated agreement status at the current version', asyn
         )['x-admission-signature']
       );
   }
-  for (const action of ['SIGN', 'REFRESH'])
+  for (const action of ['SIGN'])
     await expect(fixture.service.agreementVoltcred(vn as any, { action }, fixture.cookie())).rejects.toMatchObject({
       status: 409,
     });
@@ -2428,7 +2486,7 @@ it('reports only signed delegated agreement status at the current version', asyn
     { stage: 'agreement_pending', version: 4, actions: ['SIGN'] },
     { stage: 'agreement_pending', version: 4, actions: [], url: 'https://evil.test' },
     { stage: 'agreement_pending', version: 5, actions: [] },
-    { stage: 'signing_pending', version: 4, actions: ['REFRESH'] },
+    { stage: 'signing_pending', version: 4, actions: ['SIGN'] },
   ]) {
     fixture.fetcher.mockResolvedValueOnce(Response.json(snapshot)).mockResolvedValueOnce(Response.json(forged));
     await expect(
@@ -2465,10 +2523,199 @@ it('reports only signed delegated agreement status at the current version', asyn
   }
   fixture.fetcher
     .mockResolvedValueOnce(Response.json(snapshot))
+    .mockResolvedValueOnce(Response.json({ stage: 'signing_pending', version: 4, actions: ['REFRESH'] }))
+    .mockResolvedValueOnce(Response.json({ stage: 'agreement_signed', version: 5, actions: [] }));
+  await expect(fixture.service.agreementVoltcred(vn as any, { action: 'REFRESH' }, fixture.cookie())).resolves.toEqual({
+    stage: 'agreement_signed',
+    action: null,
+    canSign: false,
+    signed: true,
+  });
+  fixture.fetcher
+    .mockResolvedValueOnce(Response.json(snapshot))
+    .mockResolvedValueOnce(Response.json({ stage: 'agreement_signed', version: 4, actions: [] }));
+  await expect(fixture.service.agreementVoltcred(vn as any, { action: 'STATUS' }, fixture.cookie())).resolves.toEqual({
+    stage: 'agreement_signed',
+    action: null,
+    canSign: false,
+    signed: true,
+  });
+  fixture.fetcher
+    .mockResolvedValueOnce(Response.json(snapshot))
+    .mockResolvedValueOnce(Response.json({ stage: 'signing_pending', version: 4, actions: ['REFRESH'] }))
+    .mockResolvedValueOnce(Response.json({ stage: 'completed', version: 5, actions: [] }));
+  await expect(fixture.service.agreementVoltcred(vn as any, { action: 'REFRESH' }, fixture.cookie())).resolves.toEqual({
+    stage: 'completed',
+    action: null,
+    canSign: false,
+    signed: true,
+  });
+  fixture.fetcher.mockResolvedValueOnce(Response.json({ ...snapshot, status: 'approved', intake_stage: 'completed' }));
+  await expect(fixture.service.agreementVoltcred(vn as any, { action: 'STATUS' }, fixture.cookie())).resolves.toEqual({
+    stage: 'completed',
+    action: null,
+    canSign: false,
+    signed: true,
+  });
+  fixture.fetcher.mockResolvedValueOnce(Response.json({ ...snapshot, status: 'approved', intake_stage: 'completed' }));
+  await expect(fixture.service.agreementVoltcred(vn as any, { action: 'REFRESH' }, fixture.cookie())).rejects.toThrow();
+  fixture.fetcher
+    .mockResolvedValueOnce(Response.json(snapshot))
     .mockResolvedValueOnce(Response.json({ stage: 'agreement_pending', version: 4, actions: ['FREEZE'] }));
   await expect(
     fixture.service.agreementVoltcred(vn as any, { action: 'VERIFY_BANK' }, fixture.cookie())
   ).rejects.toMatchObject({ status: 409 });
   fixture.fetcher.mockResolvedValueOnce(Response.json({ ...snapshot, intake_stage: 'review' }));
   await expect(fixture.service.agreementVoltcred(vn as any, { action: 'STATUS' }, fixture.cookie())).rejects.toThrow();
+});
+
+it('isolates signer callback from owner and participant sessions', async () => {
+  const fixture = setup();
+  const secret = 's'.repeat(40),
+    jti = 'j'.repeat(43);
+  const { signerRecipientKey } = await import('../../../../src/modules/dealer-onboarding/vn-signer');
+  const { createHmac } = await import('node:crypto');
+  const commitment = createHmac('sha256', Buffer.from(signerRecipientKey(secret, '39', 'client', jti), 'hex'))
+    .update('signer@example.test')
+    .digest('hex');
+  const vn = {
+    ...config!,
+    vn: { actorOrganizationId: '39', destinyOrigin: 'http://destiny' },
+    admission: { issuerOrgId: '39', hmacSecret: 'a'.repeat(40) },
+  };
+  const broker = {
+    start: jest.fn(),
+    startSigner: jest.fn(async (_c, _g, token, eligible) => {
+      await eligible(jti, token);
+      return 'https://auth.example.test/';
+    }),
+    callback: jest.fn(),
+  };
+  fixture.fetcher.mockImplementation(async () => Response.json({ recipient_commitment: commitment }));
+  await fixture.service.startVnSigner(vn, broker, 'client', secret, { signer_token: referralToken }, fixture.setCookie);
+  const guest = fixture.cookie()!;
+  const body = {
+    jti,
+    client_id: 'client',
+    organization_id: '39',
+    recipient_commitment: commitment,
+  };
+  const issued = String(Math.floor(Date.now() / 1000));
+  const { signerRecheckSignature } = await import('../../../../src/modules/dealer-onboarding/vn-signer');
+  await expect(
+    fixture.service.recheckVnSigner(
+      vn,
+      'client',
+      secret,
+      body,
+      issued,
+      signerRecheckSignature(secret, '39', issued, JSON.stringify(body)),
+      JSON.stringify(body)
+    )
+  ).resolves.toEqual({ eligible: true });
+  await expect(
+    fixture.service.recheckVnSigner(vn, 'client', secret, body, issued, '0'.repeat(64), JSON.stringify(body))
+  ).rejects.toThrow();
+  await expect(
+    fixture.service.recheckVnSigner(
+      vn,
+      'client',
+      secret,
+      { ...body, extra: true },
+      issued,
+      signerRecheckSignature(secret, '39', issued, JSON.stringify(body)),
+      JSON.stringify(body)
+    )
+  ).rejects.toThrow();
+  broker.callback.mockResolvedValue({
+    continuation: guest,
+    userId: '21',
+    organizationId: '39',
+    email: 'signer@example.test',
+    participantJti: jti,
+  });
+  await expect(
+    fixture.service.finishVn(vn, broker, { state: 'A'.repeat(43), code: 'code' }, guest, fixture.setCookie, {
+      clientId: 'client',
+      secret,
+    })
+  ).rejects.toThrow();
+  broker.callback.mockResolvedValue({
+    continuation: guest,
+    userId: '21',
+    organizationId: '39',
+    email: 'other@example.test',
+    signerJti: jti,
+  });
+  await expect(
+    fixture.service.finishVn(vn, broker, { state: 'A'.repeat(43), code: 'code' }, guest, fixture.setCookie, {
+      clientId: 'client',
+      secret,
+    })
+  ).rejects.toThrow();
+  broker.callback.mockResolvedValue({
+    continuation: guest,
+    userId: '21',
+    organizationId: '39',
+    email: 'signer@example.test',
+    signerJti: jti,
+  });
+  await fixture.service.finishVn(vn, broker, { state: 'A'.repeat(43), code: 'code' }, guest, fixture.setCookie, {
+    clientId: 'client',
+    secret,
+  });
+  const signedIn = fixture.cookie()!;
+  await expect(fixture.service.sessionVn(vn, {}, signedIn)).resolves.toEqual({
+    state: 'signer',
+    admission: true,
+  });
+  await expect(fixture.service.lookupVnAdmission(vn, { pan: 'AAACA1234F' }, signedIn)).rejects.toThrow();
+  await expect(fixture.service.inviteVnSigner(vn, { operation: 'list', version: 1 }, signedIn)).rejects.toThrow();
+  await expect(
+    fixture.service.participantKycVn({ ...vn, kycOrigin: 'https://kyc.example.test' }, { action: 'SYNC' }, signedIn)
+  ).rejects.toThrow();
+  await expect(fixture.service.agreementVoltcred(vn as any, { action: 'STATUS' }, signedIn)).rejects.toThrow();
+  fixture.fetcher.mockResolvedValueOnce(Response.json({ recipient_commitment: 'f'.repeat(64) }));
+  await expect(
+    fixture.service.signVnSigner({ ...vn, signingOrigin: 'https://sign.example.test' }, 'client', secret, {}, signedIn)
+  ).rejects.toThrow();
+  fixture.fetcher.mockResolvedValueOnce(Response.json({ recipient_commitment: commitment })).mockResolvedValueOnce(
+    Response.json({
+      status: 'requested',
+      url: 'https://sign.example.test/start',
+    })
+  );
+  await expect(
+    fixture.service.signVnSigner({ ...vn, signingOrigin: 'https://sign.example.test' }, 'client', secret, {}, signedIn)
+  ).resolves.toEqual({
+    status: 'requested',
+    url: 'https://sign.example.test/start',
+  });
+  expect(JSON.parse(fixture.fetcher.mock.calls.at(-1)![1].body as string)).toEqual({
+    input: { action: 'signer-own-sign', signer_token: referralToken },
+  });
+  await expect(
+    fixture.service.signVnSigner(
+      { ...vn, signingOrigin: 'https://sign.example.test' },
+      'client',
+      secret,
+      { signer_token: referralToken },
+      signedIn
+    )
+  ).rejects.toThrow();
+});
+
+it('redacts signer invitation URLs and private signer request credentials from telemetry', () => {
+  expect(sanitizeOAuthUrl('https://app.example/view?signing=opaque')).toBe('https://app.example/view');
+  expect(
+    sanitizeTraceObject({
+      signer_token: 'secret',
+      'x-signer-eligibility-signature': 'secret',
+      'x-signer-recheck-signature': 'secret',
+    })
+  ).toEqual({
+    signer_token: '[REDACTED]',
+    'x-signer-eligibility-signature': '[REDACTED]',
+    'x-signer-recheck-signature': '[REDACTED]',
+  });
 });

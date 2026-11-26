@@ -22,9 +22,16 @@ export function vnAdmissionHeaders(
   const id = /^[1-9]\d{0,18}$/;
   const email = value.email.trim().toLowerCase();
   let people = false;
+  let signerOwnSign = false;
   try {
     const packet = JSON.parse(value.body);
     people = Object.keys(packet).length === 1 && packet.input?.action === 'people';
+    signerOwnSign =
+      Object.keys(packet).length === 1 &&
+      packet.input &&
+      Object.keys(packet.input).sort().join(',') === 'action,signer_token' &&
+      packet.input.action === 'signer-own-sign' &&
+      /^v3\.[A-Za-z0-9_-]{39,1021}$/.test(packet.input.signer_token);
   } catch {
     /* Invalid bodies retain the smaller limit. */
   }
@@ -35,7 +42,7 @@ export function vnAdmissionHeaders(
     !id.test(value.userId) ||
     !/^[a-z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-z0-9-]+(?:\.[a-z0-9-]+)+$/.test(email) ||
     email.length > 254 ||
-    !/^v3\.[A-Za-z0-9_-]{39,1021}$/.test(value.referral) ||
+    !(signerOwnSign ? value.referral === '' : /^v3\.[A-Za-z0-9_-]{39,1021}$/.test(value.referral)) ||
     Buffer.byteLength(value.body) > (people ? 65536 : 16384) ||
     !/^[1-9]\d{0,11}$/.test(issuedAt) ||
     Buffer.byteLength(key) < 32

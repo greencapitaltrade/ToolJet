@@ -157,6 +157,96 @@ export class DealerOnboardingController {
     }
   }
 
+  @Post('vn/signer/start')
+  @InitFeature(FEATURE_KEY.DEALER_ONBOARDING)
+  async startVnSigner(@Req() req: ApplicantHttpRequest, @Res() res: Response) {
+    const vn = await this.vnSettings();
+    return handleApplicantRequest(
+      req,
+      res,
+      vn?.scope.admission ? vn.scope : null,
+      'dealer',
+      (scope, input, _id, setCookie) =>
+        this.relay.startVnSigner(
+          scope,
+          vn!.broker,
+          vn!.config.clientId,
+          process.env.THOR_VN_DEALER_ENROLLMENT_SECRET || '',
+          input,
+          setCookie
+        )
+    );
+  }
+
+  @Post('vn/signer/recheck')
+  @InitFeature(FEATURE_KEY.DEALER_ONBOARDING)
+  async recheckVnSigner(@Req() req: ApplicantHttpRequest, @Res() res: Response) {
+    res.set({ 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' });
+    const vn = await this.vnSettings();
+    if (
+      !vn?.scope.admission ||
+      !req.is('application/json') ||
+      Object.keys(req.query).length ||
+      Number(req.get('content-length')) > 16384 ||
+      typeof req.rawBody !== 'string' ||
+      Buffer.byteLength(req.rawBody) > 16384
+    )
+      return res.status(403).json({ error: 'Unavailable' });
+    try {
+      return res
+        .status(200)
+        .json(
+          await this.relay.recheckVnSigner(
+            vn.scope,
+            vn.config.clientId,
+            process.env.THOR_VN_DEALER_ENROLLMENT_SECRET || '',
+            req.body,
+            req.get('x-signer-issued-at') || '',
+            req.get('x-signer-recheck-signature') || '',
+            req.rawBody
+          )
+        );
+    } catch {
+      return res.status(403).json({ error: 'Unavailable' });
+    }
+  }
+
+  @Post('vn/signer/sign')
+  @InitFeature(FEATURE_KEY.DEALER_ONBOARDING)
+  async signVnSigner(@Req() req: ApplicantHttpRequest, @Res() res: Response) {
+    const vn = await this.vnSettings();
+    const participant = parseDealerParticipantConfig(this.config.get<string>(DEALER_PARTICIPANT_ENV));
+    const signingOrigin =
+      participant?.origin === vn?.scope.origin &&
+      participant.organizationId === vn?.scope.organizationId &&
+      participant.furyUrl === vn?.scope.furyUrl
+        ? participant.signingOrigin
+        : undefined;
+    const scope = vn?.scope.admission && exactHttpsOrigin(signingOrigin) ? { ...vn.scope, signingOrigin } : null;
+    return handleApplicantRequest(req, res, scope, 'dealer', (settings, input, id) =>
+      this.relay.signVnSigner(
+        settings,
+        vn!.config.clientId,
+        process.env.THOR_VN_DEALER_ENROLLMENT_SECRET || '',
+        input,
+        id
+      )
+    );
+  }
+
+  @Post('vn/signer/invite')
+  @InitFeature(FEATURE_KEY.DEALER_ONBOARDING)
+  async inviteVnSigner(@Req() req: ApplicantHttpRequest, @Res() res: Response) {
+    const scope = (await this.vnSettings())?.scope;
+    return handleApplicantRequest(
+      req,
+      res,
+      scope?.admission ? scope : null,
+      'dealer',
+      this.relay.inviteVnSigner.bind(this.relay)
+    );
+  }
+
   @Post('vn/participant/kyc')
   @InitFeature(FEATURE_KEY.DEALER_ONBOARDING)
   async participantKycVn(@Req() req: ApplicantHttpRequest, @Res() res: Response) {

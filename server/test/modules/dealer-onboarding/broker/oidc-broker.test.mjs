@@ -154,3 +154,17 @@ test('participant intent carries the eligibility commitment without exposing the
   assert.ok(!url.href.includes('opaque-participant-token'));
   await assert.rejects(broker.startParticipant('continuation', guest, 'token', async () => 'invalid'));
 });
+
+test('signer intent is purpose separated and callback identifies signer state', async () => {
+  const broker = make();
+  const url = new URL(
+    await broker.startSigner('continuation', guest, 'opaque-signer-token', async () => 'a'.repeat(64))
+  );
+  const [encoded] = url.searchParams.get('enrollment_intent').split('.');
+  const intent = JSON.parse(Buffer.from(encoded, 'base64url'));
+  assert.equal(intent.purpose, 'vn_delegated_agreement_signing');
+  assert.ok(!url.href.includes('opaque-signer-token'));
+  const identity = await broker.callback({ state: url.searchParams.get('state'), code: 'code' }, guest);
+  assert.equal(identity.signerJti, intent.jti);
+  assert.equal(identity.participantJti, undefined);
+});

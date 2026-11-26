@@ -43,3 +43,7 @@ the shared short-lived applicant store.
   URL comes from the browser. The owner and participant routes share the
   bounded JPEG parser. The own-sign action uses the same scoped identity route
   and exact configured signing origin as the existing completion route.
+- VN agreement signers use a separate magic-login purpose and intent namespace.
+  Recheck the live invitation after callback and immediately before own signing;
+  signer sessions cannot access owner or participant KYC actions. Owner invitation
+  and signer own-sign requests are bound to the verified server-side session.

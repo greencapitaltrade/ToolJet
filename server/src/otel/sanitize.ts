@@ -1,5 +1,5 @@
 const CREDENTIAL_KEYS =
-  /^(?:password|current_password|new_password|token|access_token|refresh_token|subject_token|actor_token|id_token|client_secret|code|code_verifier|code_challenge|state|ticket|bootstrap|nonce|enrollment_intent|clientSecret|csrfToken|secret|authorization|cookie|tj_oauth_viewer|x-gct-admission-issuer-org|x-gct-admission-user|x-gct-admission-email|x-admission-email|x-gct-admission-issued-at|x-gct-admission-signature|x-admission-signature|x-admission-metadata|x-tooljet-delegation|x-tooljet-oauth-csrf|onboarding|referralToken|referral_token|otp|api-secret)$/i;
+  /^(?:password|current_password|new_password|token|access_token|refresh_token|subject_token|actor_token|id_token|client_secret|code|code_verifier|code_challenge|state|ticket|bootstrap|nonce|enrollment_intent|clientSecret|csrfToken|secret|authorization|cookie|tj_oauth_viewer|x-gct-admission-issuer-org|x-gct-admission-user|x-gct-admission-email|x-admission-email|x-gct-admission-issued-at|x-gct-admission-signature|x-admission-signature|x-admission-metadata|x-tooljet-delegation|x-tooljet-oauth-csrf|onboarding|referralToken|referral_token|signing|signer_token|x-signer-eligibility-signature|x-signer-recheck-signature|otp|api-secret)$/i;
 
 /** Keep credential-bearing OAuth requests out of trace attributes. */
 export function sanitizeTraceObject(value: any): any {

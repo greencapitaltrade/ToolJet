@@ -233,3 +233,9 @@ VN admitted owners may check the agreement and invoke only the currently offered
 and checks signed completion status at the same version before an action. The
 response exposes only the stage and action; signing and refresh are unavailable
 in this slice. Bank verification can retain the case version.
+
+The VN agreement signer flow uses a separate signer-only magic-login session.
+The owner can list and issue signing invitations through `vn/signer/invite`;
+recipients start through `vn/signer/start` and request their own provider URL
+through `vn/signer/sign`. The server rechecks eligibility after sign-in and again
+before signing. The signer session does not grant owner or participant KYC access.

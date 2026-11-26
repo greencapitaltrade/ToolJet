@@ -7,6 +7,13 @@ import {
   PARTICIPANT_ELIGIBILITY_PATH,
 } from './vn-participant';
 import {
+  SignerIntentStore,
+  signerEligibilityHeaders,
+  signerRecipientKey,
+  signerRecheckSignature,
+  SIGNER_ELIGIBILITY_PATH,
+} from './vn-signer';
+import {
   ApplicantFury,
   ApplicantScope,
   applicantScope,
@@ -56,21 +63,35 @@ const dealerStages = [
   'closed',
 ] as const;
 type FinancialPurpose = 'bank' | 'gst';
-type FinancialAttempt = { mobile: string; requestId?: string; choices?: Record<string, string> };
+type FinancialAttempt = {
+  mobile: string;
+  requestId?: string;
+  choices?: Record<string, string>;
+};
 type Payload = Record<string, unknown>;
 type Fields = Record<string, string>;
 type DealerScope = ApplicantScope & { signingOrigin?: string };
-type VoltcredDealerScope = DealerScope & { voltcred: DealerVoltcredBridgeConfig };
-type PublicActorScope = { actorOrganizationId: string; destinyOrigin: string; viewerUrl?: string };
+type VoltcredDealerScope = DealerScope & {
+  voltcred: DealerVoltcredBridgeConfig;
+};
+type PublicActorScope = {
+  actorOrganizationId: string;
+  destinyOrigin: string;
+  viewerUrl?: string;
+};
 export type VnDealerScope = DealerScope & {
   vn: PublicActorScope;
   admission?: { issuerOrgId: string; hmacSecret: string };
 };
 type PublicDealerScope = VoltcredDealerScope | VnDealerScope;
-type PublicOwnerScope = PublicDealerScope & { ownerHmacKey: string; kycOrigin: string };
+type PublicOwnerScope = PublicDealerScope & {
+  ownerHmacKey: string;
+  kycOrigin: string;
+};
 type VoltcredBankScope = PublicDealerScope & { bankConsentOrigin: string };
 type VnBroker = Pick<DealerOidcBroker, 'start' | 'callback'>;
 type VnParticipantBroker = VnBroker & Pick<DealerOidcBroker, 'startParticipant'>;
+type VnSignerBroker = VnBroker & Pick<DealerOidcBroker, 'startSigner'>;
 type ApplicantActor = { userId: string; actorOrgId: string; email: string };
 type State = {
   referral: string;
@@ -84,6 +105,9 @@ type State = {
   voltcredActor?: ApplicantActor;
   publicVn?: true;
   vnParticipant?: true;
+  vnSigner?: true;
+  vnSignerJti?: string;
+  vnSignerCommitment?: string;
   vnParticipantKycId?: string;
   vnActor?: ApplicantActor;
   vnAdmissionInput?: Payload;
@@ -97,7 +121,7 @@ const publicActorScope = (scope: PublicDealerScope) => ('vn' in scope ? scope.vn
 function verifiedPublicActor(scope: PublicDealerScope, state: State | null | undefined) {
   const actor =
     'vn' in scope
-      ? state?.publicVn && !state.vnParticipant && state.vnActor
+      ? state?.publicVn && !state.vnParticipant && !state.vnSigner && state.vnActor
       : state?.publicVoltcred && state.voltcredActor;
   return actor && actor.actorOrgId === publicActorScope(scope).actorOrganizationId ? actor : undefined;
 }
@@ -117,7 +141,12 @@ const ownerKycQuery = {
 const draftSelection = 'id status nextStep canWrite entityFields version documentActions { code label mode count }';
 export const maxDealerDocumentBytes = 10 * 1024 * 1024;
 type DocumentMode = 'pdf' | 'photo' | 'camera' | 'file';
-type DocumentAction = { code: string; label: string; mode: DocumentMode; count: number };
+type DocumentAction = {
+  code: string;
+  label: string;
+  mode: DocumentMode;
+  count: number;
+};
 type DealerAction =
   | { name: 'saveEntityDetails'; fields: string[] }
   | { name: 'attachDocument'; documents: DocumentAction[] };
@@ -256,7 +285,11 @@ type Operation =
   | { kind: 'gst'; action: 'STATUS' | 'START' | 'ATTACH'; account?: string }
   | { kind: 'start'; fields: Fields }
   | { kind: 'completion'; operation: CompletionOperation }
-  | { kind: 'ownerParticipant'; action: 'INVITE' | 'LIST' | 'ACCEPT'; fields: Payload };
+  | {
+      kind: 'ownerParticipant';
+      action: 'INVITE' | 'LIST' | 'ACCEPT';
+      fields: Payload;
+    };
 
 function operation(value: unknown): Operation {
   if (
@@ -637,6 +670,241 @@ export class DealerOnboarding {
     return { eligible: true };
   }
 
+  private async signerEligibility(scope: VnDealerScope, clientId: string, secret: string, jti: string, token: string) {
+    if (!scope.admission) return rejectApplicant(404);
+    const recipient_commitment_key = signerRecipientKey(secret, scope.organizationId, clientId, jti);
+    const body = JSON.stringify({
+      signer_token: token,
+      recipient_commitment_key,
+    });
+    const response = await this.fetcher(`${scope.vn.destinyOrigin}${SIGNER_ELIGIBILITY_PATH}`, {
+      method: 'POST',
+      redirect: 'error',
+      cache: 'no-store',
+      signal: AbortSignal.timeout(5000),
+      headers: {
+        'content-type': 'application/json',
+        ...signerEligibilityHeaders(scope.organizationId, body, scope.admission.hmacSecret),
+      },
+      body,
+    });
+    if (!response.ok) return rejectApplicant(409);
+    const result = await response.json();
+    if (
+      !object(result) ||
+      Object.keys(result).length !== 1 ||
+      typeof result.recipient_commitment !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(result.recipient_commitment)
+    )
+      return rejectApplicant(409);
+    return result.recipient_commitment;
+  }
+
+  async startVnSigner(
+    scope: VnDealerScope,
+    broker: VnSignerBroker,
+    clientId: string,
+    secret: string,
+    input: unknown,
+    setCookie: SetCookie
+  ) {
+    if (
+      !scope.admission ||
+      !object(input) ||
+      Object.keys(input).length !== 1 ||
+      typeof input.signer_token !== 'string' ||
+      !/^v3\.[A-Za-z0-9_-]{39,1021}$/.test(input.signer_token)
+    )
+      return rejectApplicant(400);
+    const token = input.signer_token;
+    await this.sessions.rate(scope, 'entry', scope.origin, 300, 60);
+    await this.sessions.rate(scope, 'invite', token, 100, 60);
+    const guest = await this.sessions.start(
+      scope,
+      {
+        referral: token,
+        device: newApplicantHandle(),
+        publicVn: true,
+        vnSigner: true,
+      },
+      guestTtl
+    );
+    const store = new SignerIntentStore(this.redis, scope.organizationId, secret);
+    const authorizeUrl = await broker.startSigner(guest.id, guest.id, token, async (jti, value) => {
+      const commitment = await this.signerEligibility(scope, clientId, secret, jti, value);
+      await store.put(jti, guest.id, value, commitment);
+      return commitment;
+    });
+    setCookie(guest.id, guestTtl);
+    return { authorizeUrl };
+  }
+
+  async recheckVnSigner(
+    scope: VnDealerScope,
+    clientId: string,
+    secret: string,
+    input: unknown,
+    issued: string,
+    signature: string,
+    rawBody: unknown
+  ) {
+    if (
+      typeof rawBody !== 'string' ||
+      Buffer.byteLength(rawBody) > 16384 ||
+      !scope.admission ||
+      !object(input) ||
+      Object.keys(input).sort().join(',') !== 'client_id,jti,organization_id,recipient_commitment' ||
+      input.client_id !== clientId ||
+      input.organization_id !== scope.organizationId ||
+      typeof input.jti !== 'string' ||
+      !/^[A-Za-z0-9_-]{43}$/.test(input.jti) ||
+      typeof input.recipient_commitment !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(input.recipient_commitment) ||
+      !/^[1-9]\d{0,11}$/.test(issued) ||
+      Math.abs(Date.now() / 1000 - Number(issued)) > 60 ||
+      !/^[a-f0-9]{64}$/.test(signature)
+    )
+      return rejectApplicant(403);
+    const expected = signerRecheckSignature(secret, scope.organizationId, issued, rawBody);
+    if (!timingSafeEqual(Buffer.from(signature, 'hex'), Buffer.from(expected, 'hex'))) return rejectApplicant(403);
+    const record = await new SignerIntentStore(this.redis, scope.organizationId, secret).get(input.jti);
+    if (!record || record.commitment !== input.recipient_commitment) return rejectApplicant(403);
+    const key = this.sessions.key(scope, record.guest);
+    const state = key && (await this.sessions.get(key));
+    if (!state?.vnSigner || state.vnActor || state.referral !== record.token) return rejectApplicant(403);
+    const commitment = await this.signerEligibility(scope, clientId, secret, input.jti, record.token);
+    if (commitment !== record.commitment) return rejectApplicant(403);
+    return { eligible: true };
+  }
+
+  async signVnSigner(scope: VnDealerScope, clientId: string, secret: string, input: unknown, id: string | undefined) {
+    if (!scope.admission || !exactHttpsOrigin(scope.signingOrigin) || !object(input) || Object.keys(input).length)
+      return rejectApplicant(400);
+    const key = this.sessions.key(scope, id);
+    if (!key) return rejectApplicant(401);
+    return this.sessions.withLock(key, async () => {
+      const state = await this.sessions.get(key);
+      const actor = state?.vnSigner && state.vnActor;
+      if (
+        !state ||
+        !actor ||
+        actor.actorOrgId !== scope.organizationId ||
+        !state.vnSignerJti ||
+        !state.vnSignerCommitment
+      )
+        return rejectApplicant(401);
+      if (
+        (await this.signerEligibility(scope, clientId, secret, state.vnSignerJti, state.referral)) !==
+        state.vnSignerCommitment
+      )
+        return rejectApplicant(409);
+      const body = JSON.stringify({
+        input: { action: 'signer-own-sign', signer_token: state.referral },
+      });
+      const headers = vnAdmissionHeaders(
+        {
+          organizationId: scope.organizationId,
+          issuerOrgId: actor.actorOrgId,
+          userId: actor.userId,
+          email: actor.email,
+          referral: '',
+          body,
+        },
+        scope.admission!.hmacSecret
+      );
+      const response = await this.fetcher(`${scope.vn.destinyOrigin}${VN_ADMISSION_PATH}`, {
+        method: 'POST',
+        redirect: 'error',
+        cache: 'no-store',
+        signal: AbortSignal.timeout(30000),
+        headers: {
+          'Content-Type': 'application/json',
+          'x-gct-org-id': scope.organizationId,
+          ...headers,
+        },
+        body,
+      });
+      if (!response.ok) return rejectApplicant(response.status === 403 ? 403 : response.status === 409 ? 409 : 503);
+      const result = await response.json();
+      if (!object(result) || Object.keys(result).sort().join(',') !== 'status,url' || result.status !== 'requested')
+        return rejectApplicant(503);
+      return {
+        status: 'requested',
+        url: dealerProviderRedirect(result.url, scope.signingOrigin),
+      };
+    });
+  }
+
+  async inviteVnSigner(scope: VnDealerScope, input: unknown, id: string | undefined) {
+    if (
+      !scope.admission ||
+      !object(input) ||
+      !['list', 'issue'].includes(String(input.operation)) ||
+      !Number.isSafeInteger(input.version) ||
+      (input.version as number) < 1
+    )
+      return rejectApplicant(400);
+    const issue = input.operation === 'issue';
+    if (
+      Object.keys(input).sort().join(',') !== (issue ? 'operation,slot_id,version' : 'operation,version') ||
+      (issue && (typeof input.slot_id !== 'string' || !/^person[a-f0-9]{32}$/.test(input.slot_id)))
+    )
+      return rejectApplicant(400);
+    const key = this.sessions.key(scope, id);
+    if (!key) return rejectApplicant(401);
+    return this.sessions.withLock(key, async () => {
+      const state = await this.sessions.get(key);
+      if (!state || !verifiedPublicActor(scope, state)) return rejectApplicant(401);
+      if (!state.vnAdmissionDraftId || !uuidPattern.test(state.vnAdmissionDraftId)) return rejectApplicant(409);
+      const result = await this.admitVn(scope, state, scope.admission!.hmacSecret, {
+        action: 'signer-invite',
+        draft_id: state.vnAdmissionDraftId,
+        operation: input.operation,
+        input: {
+          version: input.version,
+          ...(issue && { slot_id: input.slot_id }),
+        },
+      });
+      if (!object(result)) return rejectApplicant(503);
+      if (!issue) {
+        if (
+          Object.keys(result).join(',') !== 'signers' ||
+          !Array.isArray(result.signers) ||
+          result.signers.length > 30 ||
+          !result.signers.every(
+            (p) =>
+              object(p) &&
+              Object.keys(p).sort().join(',') === 'name,slot_id' &&
+              typeof p.name === 'string' &&
+              p.name.length <= 255 &&
+              typeof p.slot_id === 'string' &&
+              /^person[a-f0-9]{32}$/.test(p.slot_id)
+          )
+        )
+          return rejectApplicant(503);
+        return { signers: result.signers };
+      }
+      if (Object.keys(result).join(',') !== 'url' || typeof result.url !== 'string' || !scope.vn.viewerUrl)
+        return rejectApplicant(503);
+      try {
+        const url = new URL(result.url),
+          base = new URL(scope.vn.viewerUrl),
+          tokens = url.searchParams.getAll('signing');
+        if (
+          tokens.length !== 1 ||
+          [...url.searchParams.keys()].length !== 1 ||
+          !/^v3\.[A-Za-z0-9_-]{39,1021}$/.test(tokens[0])
+        )
+          return rejectApplicant(503);
+        url.searchParams.delete('signing');
+        if (url.href !== base.href) return rejectApplicant(503);
+      } catch {
+        return rejectApplicant(503);
+      }
+      return { url: result.url };
+    });
+  }
+
   async startVn(scope: VnDealerScope, broker: VnBroker, input: unknown, setCookie: SetCookie) {
     if (!object(input) || Object.keys(input).length !== 1 || !isApplicantReferral(input.referral_token))
       return rejectApplicant(400);
@@ -667,12 +935,52 @@ export class DealerOnboarding {
     if (!key || !id || scope.vn.actorOrganizationId !== scope.organizationId) return rejectApplicant(401);
     return this.sessions.withLock(key, async () => {
       const state = await this.sessions.get(key);
-      if (!state?.publicVn || state.vnActor || (!state.vnParticipant && !(await this.eligible(scope, state.referral))))
+      if (
+        !state?.publicVn ||
+        state.vnActor ||
+        (!state.vnParticipant && !state.vnSigner && !(await this.eligible(scope, state.referral)))
+      )
         return rejectApplicant(409);
       const identity = await broker.callback(input, id);
       if (identity.continuation !== id || identity.organizationId !== scope.organizationId) return rejectApplicant(409);
-      if (state.vnParticipant) {
-        if (!participantConfig || !identity.participantJti || !scope.admission) return rejectApplicant(409);
+      if (state.vnSigner) {
+        if (!participantConfig || !identity.signerJti || identity.participantJti || !scope.admission)
+          return rejectApplicant(409);
+        const record = await new SignerIntentStore(this.redis, scope.organizationId, participantConfig.secret).get(
+          identity.signerJti
+        );
+        if (
+          !record ||
+          record.guest !== id ||
+          record.token !== state.referral ||
+          (await this.signerEligibility(
+            scope,
+            participantConfig.clientId,
+            participantConfig.secret,
+            identity.signerJti,
+            record.token
+          )) !== record.commitment ||
+          createHmac(
+            'sha256',
+            Buffer.from(
+              signerRecipientKey(
+                participantConfig.secret,
+                scope.organizationId,
+                participantConfig.clientId,
+                identity.signerJti
+              ),
+              'hex'
+            )
+          )
+            .update(identity.email.trim().toLowerCase())
+            .digest('hex') !== record.commitment
+        )
+          return rejectApplicant(409);
+        state.vnSignerJti = identity.signerJti;
+        state.vnSignerCommitment = record.commitment;
+      } else if (state.vnParticipant) {
+        if (!participantConfig || !identity.participantJti || identity.signerJti || !scope.admission)
+          return rejectApplicant(409);
         const record = await new ParticipantIntentStore(this.redis, scope.organizationId, participantConfig.secret).get(
           identity.participantJti
         );
@@ -691,12 +999,16 @@ export class DealerOnboarding {
           return rejectApplicant(409);
         const verified = {
           ...state,
-          vnActor: { userId: identity.userId, actorOrgId: identity.organizationId, email: identity.email },
+          vnActor: {
+            userId: identity.userId,
+            actorOrgId: identity.organizationId,
+            email: identity.email,
+          },
         };
         const claim = await this.admitVn(scope, verified, scope.admission.hmacSecret, { action: 'person-claim' });
         if (!object(claim) || Object.keys(claim).length !== 1 || claim.status !== 'claimed')
           return rejectApplicant(409);
-      } else if (identity.participantJti) return rejectApplicant(409);
+      } else if (identity.participantJti || identity.signerJti) return rejectApplicant(409);
       const ttl = 1800;
       const session = await this.sessions.rotate(
         scope,
@@ -949,10 +1261,16 @@ export class DealerOnboarding {
   }
 
   async sessionVn(scope: VnDealerScope, input: unknown, id: string | undefined) {
-    if (!scope.admission) return { ...(await this.statusVoltcred(scope, input, id)), admission: false };
+    if (!scope.admission)
+      return {
+        ...(await this.statusVoltcred(scope, input, id)),
+        admission: false,
+      };
     if (!object(input) || Object.keys(input).length) return rejectApplicant(400);
     const key = this.sessions.key(scope, id);
     const state = key ? await this.sessions.get(key) : null;
+    if (state?.publicVn && state.vnSigner && state.vnActor?.actorOrgId === scope.organizationId)
+      return { state: 'signer', admission: true };
     if (state?.publicVn && state.vnParticipant && state.vnActor?.actorOrgId === scope.organizationId)
       return {
         state: 'claimed',
@@ -2025,7 +2343,10 @@ export class DealerOnboarding {
         return saved;
       }
       if (!scope.ownerHmacKey || !scope.kycOrigin) return rejectApplicant(503);
-      const ownerScope = scope as VnDealerScope & { ownerHmacKey: string; kycOrigin: string };
+      const ownerScope = scope as VnDealerScope & {
+        ownerHmacKey: string;
+        kycOrigin: string;
+      };
       const { draft, canWrite } = await this.readVoltcredDraft(scope, state);
       if (!canWrite || draft.stage !== 'additional_documents') return rejectApplicant(409);
       const project = (data: unknown) => {
@@ -2224,7 +2545,7 @@ export class DealerOnboarding {
       const state = await this.sessions.get(key);
       if (!state || !state.referral) return rejectApplicant(401);
       if ('vn' in scope && scope.admission) {
-        if (!['STATUS', 'VERIFY_BANK', 'FREEZE'].includes(action)) return rejectApplicant(409);
+        if (!['STATUS', 'VERIFY_BANK', 'FREEZE', 'REFRESH'].includes(action)) return rejectApplicant(409);
         if (
           scope.admission.issuerOrgId !== scope.organizationId ||
           scope.vn.actorOrganizationId !== scope.organizationId ||
@@ -2242,11 +2563,14 @@ export class DealerOnboarding {
           !object(snapshot) ||
           snapshot.draft_id !== draftId ||
           !Number.isSafeInteger(snapshot.version) ||
-          (snapshot.version as number) < 1 ||
-          snapshot.status !== 'submitted' ||
-          snapshot.intake_stage !== 'agreement'
+          (snapshot.version as number) < 1
         )
           return rejectApplicant(409);
+        if (snapshot.status === 'approved' && snapshot.intake_stage === 'completed') {
+          if (action !== 'STATUS') return rejectApplicant(409);
+          return { stage: 'completed', action: null, canSign: false, signed: true };
+        }
+        if (snapshot.status !== 'submitted' || snapshot.intake_stage !== 'agreement') return rejectApplicant(409);
         const send = async (operation: string, version: number) => {
           const result = await this.admitVn(scope, state, scope.admission!.hmacSecret, {
             action: 'completion',
@@ -2258,6 +2582,8 @@ export class DealerOnboarding {
             bank_verification_required: 'VERIFY_BANK',
             agreement_pending: 'FREEZE',
             signing_pending: null,
+            agreement_signed: null,
+            completed: null,
             review_pending: null,
             agreement_unavailable: null,
           };
@@ -2269,18 +2595,36 @@ export class DealerOnboarding {
             !Number.isSafeInteger(result.version) ||
             (result.version as number) < version ||
             !Array.isArray(result.actions) ||
-            result.actions.length !== (allowed[result.stage] ? 1 : 0) ||
-            (allowed[result.stage] && result.actions[0] !== allowed[result.stage])
+            (result.stage === 'signing_pending'
+              ? !(result.actions.length === 0 || (result.actions.length === 1 && result.actions[0] === 'REFRESH'))
+              : result.actions.length !== (allowed[result.stage] ? 1 : 0) ||
+                (allowed[result.stage] && result.actions[0] !== allowed[result.stage])) ||
+            (operation === 'REFRESH' && (result.version as number) > version + 1)
           )
             return rejectApplicant(503);
-          return { stage: result.stage, version: result.version as number, action: allowed[result.stage] };
+          return {
+            stage: result.stage,
+            version: result.version as number,
+            action: result.stage === 'signing_pending' && result.actions.length ? 'REFRESH' : allowed[result.stage],
+          };
         };
         const current = await send('STATUS', snapshot.version as number);
         if (current.version !== snapshot.version) return rejectApplicant(409);
-        if (action === 'STATUS') return { stage: current.stage, action: current.action, canSign: false, signed: false };
+        if (action === 'STATUS')
+          return {
+            stage: current.stage,
+            action: current.action,
+            canSign: false,
+            signed: ['agreement_signed', 'completed'].includes(current.stage),
+          };
         if (current.action !== action) return rejectApplicant(409);
         const result = await send(action, current.version);
-        return { stage: result.stage, action: result.action, canSign: false, signed: false };
+        return {
+          stage: result.stage,
+          action: result.action,
+          canSign: false,
+          signed: ['agreement_signed', 'completed'].includes(result.stage),
+        };
       }
       if (!('ownerHmacKey' in scope)) return rejectApplicant(503);
       const { draft, canWrite, headers, data } = await this.readVoltcredDraft(scope, state);
