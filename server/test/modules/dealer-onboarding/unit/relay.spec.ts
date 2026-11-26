@@ -1,5 +1,10 @@
-import { createHmac } from 'node:crypto';
+import { createHash, createHmac } from 'node:crypto';
 import { ApplicantSessions } from '../../../../src/modules/applicant-session/store';
+import {
+  parseVnAdmissionConfig,
+  VN_ADMISSION_DOCUMENT_PATH,
+  vnAdmissionHeaders,
+} from '../../../../src/modules/dealer-onboarding/admission';
 /** @group platform */
 import { DealerOnboarding, parseDealerOnboardingConfig } from '../../../../src/modules/dealer-onboarding/relay';
 import { parseDealerParticipantConfig } from '../../../../src/modules/dealer-onboarding/participant';
@@ -1491,7 +1496,6 @@ it('pins a verified VN admission request and recovers its receipt on retry', asy
 });
 
 it('rejects VN admission configurations that are absent, foreign or malformed', () => {
-  const { parseVnAdmissionConfig } = require('../../../../src/modules/dealer-onboarding/admission');
   const valid = { issuerOrgId: '39', hmacSecret: 's'.repeat(32) };
   expect(parseVnAdmissionConfig(JSON.stringify(valid), '39')).toEqual(valid);
   for (const value of [
@@ -1596,7 +1600,6 @@ it('resumes only the verified session admission receipt and projects the status'
     })
   );
   await expect(fixture.service.resumeVnAdmission(vn, {}, fixture.cookie())).rejects.toMatchObject({ status: 503 });
-  const { vnAdmissionHeaders } = require('../../../../src/modules/dealer-onboarding/admission');
   const signed = vnAdmissionHeaders(
     {
       organizationId: '39',
@@ -2116,9 +2119,8 @@ it('rechecks a participant intent and claims only after its verified callback', 
     action: 'person-selfie',
     referral_token: referralToken,
     request_id: requestId,
-    sha256: require('node:crypto').createHash('sha256').update(jpeg).digest('hex'),
+    sha256: createHash('sha256').update(jpeg).digest('hex'),
   });
-  const { vnAdmissionHeaders } = require('../../../../src/modules/dealer-onboarding/admission');
   expect(selfieRequest.headers['x-admission-signature']).toBe(
     vnAdmissionHeaders(
       {
@@ -2255,14 +2257,10 @@ it('binds delegated evidence to the owner draft and signs the exact bytes and me
       code: 'utility_bill',
       version: 2,
       location: null,
-      sha256: require('node:crypto').createHash('sha256').update(file).digest('hex'),
+      sha256: createHash('sha256').update(file).digest('hex'),
     },
   });
   expect(Buffer.from(await request.body.get('file').arrayBuffer())).toEqual(file);
-  const {
-    vnAdmissionHeaders,
-    VN_ADMISSION_DOCUMENT_PATH,
-  } = require('../../../../src/modules/dealer-onboarding/admission');
   expect(request.headers['x-admission-signature']).toBe(
     vnAdmissionHeaders(
       {
@@ -2316,7 +2314,6 @@ it('routes VN review through the signed admitted owner and current case version'
     { referral_token: referralToken, action: 'completion', draft_id: draft.id, operation: 'STATUS', version: 4 },
     { referral_token: referralToken, action: 'completion', draft_id: draft.id, operation: 'PREPARE', version: 4 },
   ]);
-  const { vnAdmissionHeaders } = require('../../../../src/modules/dealer-onboarding/admission');
   for (const [, request] of requests)
     expect(request.headers['x-admission-signature']).toBe(
       vnAdmissionHeaders(
@@ -2430,7 +2427,6 @@ it('uses the signed bound admission execution snapshot and rejects stale version
     { referral_token: referralToken, action: 'execution', draft_id: draft.id, operation: 'STATUS', version: 4 },
     { referral_token: referralToken, action: 'execution', draft_id: draft.id, operation: 'SAVE', version: 4, fields },
   ]);
-  const { vnAdmissionHeaders } = require('../../../../src/modules/dealer-onboarding/admission');
   for (const [, request] of requests)
     expect(request.headers['x-admission-signature']).toBe(
       vnAdmissionHeaders(
@@ -2502,7 +2498,6 @@ it('reports only signed delegated agreement status at the current version', asyn
       { referral_token: referralToken, action: 'resume', draft_id: draft.id },
       { referral_token: referralToken, action: 'completion', draft_id: draft.id, operation: 'STATUS', version: 4 },
     ]);
-    const { vnAdmissionHeaders } = require('../../../../src/modules/dealer-onboarding/admission');
     for (const [, req] of requests)
       expect(req.headers['x-admission-signature']).toBe(
         vnAdmissionHeaders(

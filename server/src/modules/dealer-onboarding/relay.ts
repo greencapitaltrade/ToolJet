@@ -2091,8 +2091,8 @@ export class DealerOnboarding {
         }
       );
       if (!response.ok) return rejectApplicant(503);
-      const { id: _requestId, ...safe } = this.financialView(await response.json(), scope.bankConsentOrigin, requestId);
-      return safe;
+      const { status, consentUrl } = this.financialView(await response.json(), scope.bankConsentOrigin, requestId);
+      return { status, ...(consentUrl && { consentUrl }) };
     });
   }
 
@@ -2158,12 +2158,12 @@ export class DealerOnboarding {
       const state = await this.sessions.get(key);
       if (!state) return rejectApplicant(401);
       const draft = await this.financialDraft(scope, state, purpose);
-      const { id: _id, ...safe } = this.financialView(
+      const { status, consentUrl } = this.financialView(
         await this.financialAction(scope, purpose, state[attemptKey], draft, 'sync'),
         scope.bankConsentOrigin,
         state[attemptKey]?.requestId
       );
-      return safe;
+      return { status, ...(consentUrl && { consentUrl }) };
     });
   }
 
