@@ -6,6 +6,7 @@ import { DealerOnboardingController } from '../../../../src/modules/dealer-onboa
 import { DealerParticipant, parseDealerParticipantConfig } from '../../../../src/modules/dealer-onboarding/participant';
 import type { ApplicantHttpRequest } from '../../../../src/modules/applicant-session/http';
 import { isApplicantOnboardingRequest, sanitizeOAuthRequest } from '../../../../src/otel/sanitize';
+import * as vnOidc from '../../../../src/modules/dealer-onboarding/oidc-factory';
 
 jest.mock('@modules/app/ability/guard', () => ({ FeatureAbilityGuard: class {} }));
 jest.mock('@modules/app/constants', () => ({ FEATURE_KEY: { DEALER_ONBOARDING: 'dealer-onboarding' } }));
@@ -22,6 +23,79 @@ const scope = {
   kycOrigin: 'https://identity.example.test',
   signingOrigin: 'https://signing.example.test',
 };
+
+it('returns from VN OIDC using the guest cookie and a fixed viewer URL', async () => {
+  const oldConfig = process.env.TOOLJET_DEALER_VN_OIDC;
+  process.env.TOOLJET_DEALER_VN_OIDC = '{}';
+  const { kycOrigin: _kycOrigin, signingOrigin: _signingOrigin, ...applicantScope } = scope;
+  const controller = new DealerOnboardingController(
+    new ConfigService({ TOOLJET_DEALER_ONBOARDING: JSON.stringify(applicantScope) }),
+    { getClient: jest.fn() } as unknown as RedisService
+  );
+  const issuer = 'https://auth.example.test/oidc';
+  const viewerUrl = scope.origin + '/applications/dealer';
+  const redirectUri = scope.origin + '/api/dealer-onboarding/vn/callback';
+  const factory = jest.spyOn(vnOidc, 'createDealerOidcBroker').mockResolvedValue({
+    broker: {} as never,
+    config: {
+      issuer,
+      redirectUri,
+      viewerUrl,
+      clientId: 'dealer',
+      organizationId: scope.organizationId,
+      destinyOrigin,
+      thorOrigin: 'http://thor.test.svc.cluster.local',
+    },
+  });
+  const cookie = '__Host-tj-dealer-onboarding';
+  const guest = 'A'.repeat(43);
+  const fresh = 'B'.repeat(43);
+  const finish = jest
+    .spyOn(controller['relay'], 'finishVn')
+    .mockImplementation(async (...args) => args[4](fresh, 1800));
+  const res = {
+    set: jest.fn(),
+    status: jest.fn().mockReturnThis(),
+    json: jest.fn(),
+    cookie: jest.fn(),
+    redirect: jest.fn(),
+  };
+  const callback = (query: Record<string, unknown>, cookies = {}) =>
+    controller.finishVn({ query, cookies } as ApplicantHttpRequest, res as unknown as ExpressResponse);
+  try {
+    await callback({ code: 'oidc-code', state: guest, iss: 'https://other.example.test' }, { [cookie]: guest });
+    expect(res.status).toHaveBeenLastCalledWith(400);
+    await callback({ code: 'oidc-code', state: guest });
+    expect(res.status).toHaveBeenLastCalledWith(401);
+    expect(finish).not.toHaveBeenCalled();
+    await callback({ code: 'oidc-code', state: guest, iss: issuer }, { [cookie]: guest });
+    expect(finish).toHaveBeenCalledWith(
+      expect.objectContaining({ organizationId: '39' }),
+      {},
+      { code: 'oidc-code', state: guest },
+      guest,
+      expect.any(Function),
+      { clientId: 'dealer', secret: '' }
+    );
+    expect(res.cookie).toHaveBeenCalledWith(
+      cookie,
+      fresh,
+      expect.objectContaining({
+        secure: true,
+        httpOnly: true,
+        sameSite: 'lax',
+        path: '/',
+        maxAge: 1800000,
+      })
+    );
+    expect(res.redirect).toHaveBeenCalledWith(303, viewerUrl);
+    expect(factory).toHaveBeenCalledTimes(1);
+  } finally {
+    factory.mockRestore();
+    if (oldConfig === undefined) delete process.env.TOOLJET_DEALER_VN_OIDC;
+    else process.env.TOOLJET_DEALER_VN_OIDC = oldConfig;
+  }
+});
 
 function setup(upstreamOrigin = destinyOrigin) {
   const keys = new Map<string, string>();
@@ -330,4 +404,26 @@ it('requires an approved, fresh participant receipt before reading and forwardin
   withdraw();
   await expect(uploadSelfie(read)).rejects.toMatchObject({ status: 409 });
   expect(read).toHaveBeenCalledTimes(1);
+});
+
+it('requires a bounded raw body for participant rechecks and forwards it unchanged', async () => {
+  const controller = new DealerOnboardingController(new ConfigService(), {
+    getClient: jest.fn(),
+  } as unknown as RedisService);
+  jest
+    .spyOn(controller as any, 'vnSettings')
+    .mockResolvedValue({ scope: { admission: {} }, config: { clientId: 'client' } });
+  const relay = jest.spyOn(controller['relay'], 'recheckVnParticipant').mockResolvedValue({ eligible: true });
+  const res = { set: jest.fn(), status: jest.fn().mockReturnThis(), json: jest.fn() };
+  const request = (rawBody: unknown) =>
+    ({ rawBody, body: {}, query: {}, is: () => true, get: () => '' }) as unknown as ApplicantHttpRequest;
+  for (const raw of [undefined, null, {}, 123, ' '.repeat(16385)]) {
+    await controller.recheckVnParticipant(request(raw), res as unknown as ExpressResponse);
+    expect(res.status).toHaveBeenLastCalledWith(403);
+  }
+  expect(relay).not.toHaveBeenCalled();
+  const raw = '{ "x": 1 }';
+  await controller.recheckVnParticipant(request(raw), res as unknown as ExpressResponse);
+  expect(relay).toHaveBeenCalledWith(expect.anything(), 'client', expect.any(String), {}, '', '', raw);
+  expect(res.status).toHaveBeenLastCalledWith(200);
 });

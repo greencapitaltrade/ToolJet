@@ -172,3 +172,58 @@ and decisions.
 
 The dedicated dossier and identity routes collect execution details and the
 owner's own identity evidence.
+
+### Isolated VN delegated admission
+
+The public VN viewer remains disabled until delegated dossier reads and actions
+are implemented and verified. For isolated admission testing only, configure
+`TOOLJET_DEALER_VN_ADMISSION` as a managed server-side JSON secret with exactly
+`issuerOrgId` and `hmacSecret`. The issuer must equal the configured VN OIDC
+and dealer organization; the HMAC secret must contain at least 32 UTF-8 bytes
+and match Destiny's VN admission secret. No browser chooses the issuer,
+Destiny origin, actor, or referral. Malformed settings disable the VN route.
+
+After the existing verified VN sign-in, `POST /api/dealer-onboarding/vn/admission`
+accepts exactly `pan`, `partner_name`, and optional `gst`, `mobile`, `firm_type`,
+`proprietor_name`. It signs the exact body using the server-held referral and
+verified actor. The session pins the request before sending; retries must use
+identical inputs, allowing Destiny's idempotent admission to recover a lost
+response. A successful UUID is saved to the server session and returned as an
+admission receipt, not as a dossier. This mode disables the existing VN public
+lookup and dossier endpoints.
+
+The isolated admission mode also exposes `POST /api/dealer-onboarding/vn/admission-status`
+with an empty JSON body. It resumes only the current verified VN session's saved
+admission receipt, re-signing the request with that session's actor and referral.
+The response contains only the case reference, version, status, and stage.
+The public viewer supports the bank, GST and people stages; later stages remain gated.
+
+The public admission people stage uses `POST /api/dealer-onboarding/vn/roster`
+for state and save. The relay resumes the signed session-pinned draft for each
+request and requires the live people stage and version; it forwards only roster
+fields to the signed admission endpoint and projects only the safe response.
+Saving details does not complete identity verification or advance this stage.
+
+The delegated owner can enter agreement execution details at the additional
+Documents stage while the case is in progress. `POST /vn/execution` resumes the
+session-bound draft and checks a signed execution status at that exact version;
+saves must carry the displayed version and are signed at the same version. Only
+the form variant and version return to the viewer, never entered bank details.
+A null form variant is unavailable or already saved; it does not authorize
+signing. Corrections requested during review remain document-only. This local
+integration is not a release or provider-readiness claim.
+
+The VN delegated participant session also supports `POST /vn/participant/kyc`.
+`START` requires explicit consent and `SYNC` takes no request ID from the
+browser. The relay signs the participant's stored actor and invitation, stores
+the returned request ID in that session, and allows a gateway URL only at the
+configured `TOOLJET_DEALER_OWNER_KYC_ORIGIN`. Evidence received is awaiting
+verification. A fresh session needs consent again to recover the idempotent
+start because Destiny currently has no participant status lookup. Session
+expiry removes the stored request ID; it does not remove provider evidence.
+
+VN admitted owners check review through the signed admission continuation. The
+relay resumes the bound case and sends only the current version with STATUS,
+PREPARE or SUBMIT; Destiny selects the available action. Credit review and
+requested document corrections remain separate states. Agreement, bank and
+identity prerequisites are not bypassed by this continuation.

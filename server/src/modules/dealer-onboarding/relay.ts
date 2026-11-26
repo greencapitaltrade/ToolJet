@@ -1,3 +1,11 @@
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import {
+  ParticipantIntentStore,
+  participantEligibilityHeaders,
+  participantRecipientKey,
+  participantRecheckSignature,
+  PARTICIPANT_ELIGIBILITY_PATH,
+} from './vn-participant';
 import {
   ApplicantFury,
   ApplicantScope,
@@ -11,6 +19,20 @@ import { ApplicantRedis, ApplicantSessions, newApplicantHandle } from '../applic
 import { dealerDossierInput, requestDealerDossier } from './dossier';
 import { dealerProviderRedirect, parseDealerParticipantConfig } from './participant';
 import { dealerSelfieData } from './selfie';
+import { DealerContinuation } from './continuation';
+import {
+  VN_ADMISSION_PATH,
+  VN_ADMISSION_DOCUMENT_PATH,
+  VN_ADMISSION_SELFIE_PATH,
+  vnAdmissionHeaders,
+} from './admission';
+import type { DealerOidcBroker } from './oidc-broker';
+import {
+  dealerVoltcredAuthorizeUrl,
+  dealerVoltcredHandle,
+  type DealerVoltcredBridgeConfig,
+  type DealerVoltcredReceipt,
+} from './voltcred-bridge';
 
 export const DEALER_ONBOARDING_ENV = 'TOOLJET_DEALER_ONBOARDING';
 export const DEALER_OWNER_KYC_ORIGIN = 'TOOLJET_DEALER_OWNER_KYC_ORIGIN';
@@ -21,9 +43,35 @@ const gstChoicePattern = /^[a-f0-9]{64}$/;
 const fieldLimits = { businessName: 255, applicantName: 255, applicantRole: 30, email: 254, gstin: 15, firmType: 20 };
 const entityFieldNames = ['premises', 'cin', 'llpin'];
 const guestTtl = 600;
+const dealerStages = [
+  'bank',
+  'gst',
+  'people',
+  'premises_photo',
+  'electricity_bill',
+  'additional_documents',
+  'review',
+  'agreement',
+  'completed',
+  'closed',
+] as const;
+type FinancialPurpose = 'bank' | 'gst';
+type FinancialAttempt = { mobile: string; requestId?: string; choices?: Record<string, string> };
 type Payload = Record<string, unknown>;
 type Fields = Record<string, string>;
 type DealerScope = ApplicantScope & { signingOrigin?: string };
+type VoltcredDealerScope = DealerScope & { voltcred: DealerVoltcredBridgeConfig };
+type PublicActorScope = { actorOrganizationId: string; destinyOrigin: string; viewerUrl?: string };
+export type VnDealerScope = DealerScope & {
+  vn: PublicActorScope;
+  admission?: { issuerOrgId: string; hmacSecret: string };
+};
+type PublicDealerScope = VoltcredDealerScope | VnDealerScope;
+type PublicOwnerScope = PublicDealerScope & { ownerHmacKey: string; kycOrigin: string };
+type VoltcredBankScope = PublicDealerScope & { bankConsentOrigin: string };
+type VnBroker = Pick<DealerOidcBroker, 'start' | 'callback'>;
+type VnParticipantBroker = VnBroker & Pick<DealerOidcBroker, 'startParticipant'>;
+type ApplicantActor = { userId: string; actorOrgId: string; email: string };
 type State = {
   referral: string;
   device: string;
@@ -32,9 +80,27 @@ type State = {
   pan?: string;
   draftId?: string;
   gstRequestId?: string;
+  publicVoltcred?: true;
+  voltcredActor?: ApplicantActor;
+  publicVn?: true;
+  vnParticipant?: true;
+  vnParticipantKycId?: string;
+  vnActor?: ApplicantActor;
+  vnAdmissionInput?: Payload;
+  vnAdmissionDraftId?: string;
+  bankAa?: FinancialAttempt;
+  gstAa?: FinancialAttempt;
 };
 type VerifiedOwner = State & { phone: string };
 type SetCookie = (id: string, ttl: number) => void;
+const publicActorScope = (scope: PublicDealerScope) => ('vn' in scope ? scope.vn : scope.voltcred);
+function verifiedPublicActor(scope: PublicDealerScope, state: State | null | undefined) {
+  const actor =
+    'vn' in scope
+      ? state?.publicVn && !state.vnParticipant && state.vnActor
+      : state?.publicVoltcred && state.voltcredActor;
+  return actor && actor.actorOrgId === publicActorScope(scope).actorOrganizationId ? actor : undefined;
+}
 export type OwnerKycScope = DealerScope & { kycOrigin?: string };
 const ownerKycActions = ['START', 'SYNC', 'SELFIE', 'SIGN'];
 const ownerKycStatuses = ['not_started', 'pending', 'verified', 'failed', 'cancelled', 'unknown', 'requesting'];
@@ -141,6 +207,25 @@ function object(value: unknown): value is Payload {
   return Boolean(value && typeof value === 'object' && !Array.isArray(value));
 }
 
+function voltcredDraft(intake: unknown, organizationId: string) {
+  if (!object(intake)) return rejectApplicant(503);
+  const org =
+    typeof intake.organization_id === 'number' && Number.isSafeInteger(intake.organization_id)
+      ? String(intake.organization_id)
+      : intake.organization_id;
+  if (
+    typeof intake.draft_id !== 'string' ||
+    !uuidPattern.test(intake.draft_id) ||
+    org !== organizationId ||
+    typeof intake.version !== 'number' ||
+    !Number.isSafeInteger(intake.version) ||
+    intake.version < 1
+  )
+    return rejectApplicant(503);
+  const stage = dealerStages.find((value) => value === intake.intake_stage);
+  return { id: intake.draft_id, version: intake.version, ...(stage && { stage }) };
+}
+
 export function parseDealerOnboardingConfig(
   value: string | undefined,
   participant?: ReturnType<typeof parseDealerParticipantConfig>
@@ -245,7 +330,7 @@ function operation(value: unknown): Operation {
       (key) =>
         Object.prototype.hasOwnProperty.call(fieldLimits, key) &&
         typeof fields[key] === 'string' &&
-        fields[key].length <= fieldLimits[key]
+        fields[key].length <= fieldLimits[key as keyof typeof fieldLimits]
     ) &&
     ['businessName', 'applicantName', 'applicantRole', 'email'].every(
       (key) => typeof fields[key] === 'string' && fields[key].trim()
@@ -370,16 +455,72 @@ function completionView(value: unknown, signingOrigin?: string) {
   };
 }
 
+const evidenceDefinitions: Record<string, { label: string; mode: string }> = {
+  business_premises_photo: { label: 'Geotagged business premises photo', mode: 'camera' },
+  utility_bill: { label: 'Latest electricity bill', mode: 'upload' },
+  additional_documents: { label: 'Additional documents', mode: 'upload' },
+};
+
+function isVoltcredEvidenceStage(
+  stage: string | undefined
+): stage is 'premises_photo' | 'electricity_bill' | 'additional_documents' {
+  return stage === 'premises_photo' || stage === 'electricity_bill' || stage === 'additional_documents';
+}
+
+export function projectVoltcredEvidence(stage: string, data: unknown) {
+  if (!object(data) || !isVoltcredEvidenceStage(stage)) return rejectApplicant(503);
+  const requested = data.requested_document_codes ?? [];
+  if (
+    !Array.isArray(requested) ||
+    requested.length > 3 ||
+    requested.some((code) => typeof code !== 'string' || !Object.hasOwn(evidenceDefinitions, code)) ||
+    new Set(requested).size !== requested.length ||
+    (stage !== 'additional_documents' && requested.length)
+  )
+    return rejectApplicant(503);
+  const allowed =
+    stage === 'premises_photo'
+      ? ['business_premises_photo']
+      : stage === 'electricity_bill'
+        ? ['utility_bill']
+        : requested.length
+          ? requested
+          : ['additional_documents'];
+  const actions = data.document_actions ?? [];
+  if (!Array.isArray(actions) || actions.length > allowed.length) return rejectApplicant(503);
+  const seen = new Set<string>();
+  const document_actions = actions.map((action: unknown) => {
+    if (!object(action) || typeof action.code !== 'string' || !allowed.includes(action.code) || seen.has(action.code))
+      return rejectApplicant(503);
+    const definition = evidenceDefinitions[action.code];
+    if (
+      action.label !== definition.label ||
+      action.mode !== definition.mode ||
+      typeof action.count !== 'number' ||
+      !Number.isSafeInteger(action.count) ||
+      action.count < 0
+    )
+      return rejectApplicant(503);
+    seen.add(action.code);
+    return { code: action.code, label: definition.label, mode: definition.mode, count: action.count };
+  });
+  return { stage, requested_document_codes: requested, document_actions };
+}
+
 export class DealerOnboarding {
   private readonly fury: ApplicantFury;
   private readonly sessions: ApplicantSessions<State>;
+  private readonly continuations: DealerContinuation;
+  private readonly redis: ApplicantRedis;
 
   constructor(
     redis: ApplicantRedis,
     private readonly fetcher: typeof fetch = fetch
   ) {
+    this.redis = redis;
     this.fury = new ApplicantFury(fetcher);
     this.sessions = new ApplicantSessions(redis, 'dealer');
+    this.continuations = new DealerContinuation(redis);
   }
 
   private async eligible(scope: ApplicantScope, referral: string) {
@@ -389,6 +530,2121 @@ export class DealerOnboarding {
     } catch {
       return false;
     }
+  }
+
+  private async participantEligibility(
+    scope: VnDealerScope,
+    clientId: string,
+    secret: string,
+    jti: string,
+    token: string
+  ) {
+    if (!scope.admission) return rejectApplicant(404);
+    const recipient_commitment_key = participantRecipientKey(secret, scope.organizationId, clientId, jti);
+    const body = JSON.stringify({ participant_token: token, recipient_commitment_key });
+    const response = await this.fetcher(`${scope.vn.destinyOrigin}${PARTICIPANT_ELIGIBILITY_PATH}`, {
+      method: 'POST',
+      redirect: 'error',
+      cache: 'no-store',
+      signal: AbortSignal.timeout(5000),
+      headers: {
+        'content-type': 'application/json',
+        ...participantEligibilityHeaders(scope.organizationId, body, scope.admission.hmacSecret),
+      },
+      body,
+    });
+    if (!response.ok) return rejectApplicant(409);
+    const result = await response.json();
+    if (
+      !object(result) ||
+      Object.keys(result).length !== 1 ||
+      typeof result.recipient_commitment !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(result.recipient_commitment)
+    )
+      return rejectApplicant(409);
+    return result.recipient_commitment;
+  }
+
+  async startVnParticipant(
+    scope: VnDealerScope,
+    broker: VnParticipantBroker,
+    clientId: string,
+    secret: string,
+    input: unknown,
+    setCookie: SetCookie
+  ) {
+    if (
+      !scope.admission ||
+      !object(input) ||
+      Object.keys(input).length !== 1 ||
+      typeof input.participant_token !== 'string' ||
+      !/^v3\.[A-Za-z0-9_-]{39,1021}$/.test(input.participant_token)
+    )
+      return rejectApplicant(400);
+    const token = input.participant_token;
+    await this.sessions.rate(scope, 'entry', scope.origin, 300, 60);
+    await this.sessions.rate(scope, 'invite', token, 100, 60);
+    const guest = await this.sessions.start(
+      scope,
+      { referral: token, device: newApplicantHandle(), publicVn: true, vnParticipant: true },
+      guestTtl
+    );
+    const store = new ParticipantIntentStore(this.redis, scope.organizationId, secret);
+    const authorizeUrl = await broker.startParticipant(guest.id, guest.id, token, async (jti, value) => {
+      const commitment = await this.participantEligibility(scope, clientId, secret, jti, value);
+      await store.put(jti, guest.id, value, commitment);
+      return commitment;
+    });
+    setCookie(guest.id, guestTtl);
+    return { authorizeUrl };
+  }
+
+  async recheckVnParticipant(
+    scope: VnDealerScope,
+    clientId: string,
+    secret: string,
+    input: unknown,
+    issued: string,
+    signature: string,
+    rawBody: unknown
+  ) {
+    if (
+      typeof rawBody !== 'string' ||
+      Buffer.byteLength(rawBody) > 16384 ||
+      !scope.admission ||
+      !object(input) ||
+      Object.keys(input).sort().join(',') !== 'client_id,jti,organization_id,recipient_commitment' ||
+      input.client_id !== clientId ||
+      input.organization_id !== scope.organizationId ||
+      typeof input.jti !== 'string' ||
+      !/^[A-Za-z0-9_-]{43}$/.test(input.jti) ||
+      typeof input.recipient_commitment !== 'string' ||
+      !/^[a-f0-9]{64}$/.test(input.recipient_commitment) ||
+      !/^[1-9]\d{0,11}$/.test(issued) ||
+      Math.abs(Date.now() / 1000 - Number(issued)) > 60 ||
+      !/^[a-f0-9]{64}$/.test(signature)
+    )
+      return rejectApplicant(403);
+    const expected = participantRecheckSignature(secret, scope.organizationId, issued, rawBody);
+    if (!timingSafeEqual(Buffer.from(signature, 'hex'), Buffer.from(expected, 'hex'))) return rejectApplicant(403);
+    const record = await new ParticipantIntentStore(this.redis, scope.organizationId, secret).get(input.jti);
+    if (!record || record.commitment !== input.recipient_commitment) return rejectApplicant(403);
+    const key = this.sessions.key(scope, record.guest);
+    const state = key && (await this.sessions.get(key));
+    if (!state?.vnParticipant || state.vnActor || state.referral !== record.token) return rejectApplicant(403);
+    const commitment = await this.participantEligibility(scope, clientId, secret, input.jti, record.token);
+    if (commitment !== record.commitment) return rejectApplicant(403);
+    return { eligible: true };
+  }
+
+  async startVn(scope: VnDealerScope, broker: VnBroker, input: unknown, setCookie: SetCookie) {
+    if (!object(input) || Object.keys(input).length !== 1 || !isApplicantReferral(input.referral_token))
+      return rejectApplicant(400);
+    if (scope.vn.actorOrganizationId !== scope.organizationId) return rejectApplicant(503);
+    const referral = input.referral_token;
+    await this.sessions.rate(scope, 'entry', scope.origin, 300, 60);
+    await this.sessions.rate(scope, 'invite', referral, 100, 60);
+    if (!(await this.eligible(scope, referral))) return rejectApplicant(409);
+    const guest = await this.sessions.start(
+      scope,
+      { referral, device: newApplicantHandle(), publicVn: true },
+      guestTtl
+    );
+    const authorizeUrl = await broker.start(guest.id, guest.id);
+    setCookie(guest.id, guestTtl);
+    return { authorizeUrl };
+  }
+
+  async finishVn(
+    scope: VnDealerScope,
+    broker: VnBroker,
+    input: { state: string; code: string },
+    id: string | undefined,
+    setCookie: SetCookie,
+    participantConfig?: { clientId: string; secret: string }
+  ) {
+    const key = this.sessions.key(scope, id);
+    if (!key || !id || scope.vn.actorOrganizationId !== scope.organizationId) return rejectApplicant(401);
+    return this.sessions.withLock(key, async () => {
+      const state = await this.sessions.get(key);
+      if (!state?.publicVn || state.vnActor || (!state.vnParticipant && !(await this.eligible(scope, state.referral))))
+        return rejectApplicant(409);
+      const identity = await broker.callback(input, id);
+      if (identity.continuation !== id || identity.organizationId !== scope.organizationId) return rejectApplicant(409);
+      if (state.vnParticipant) {
+        if (!participantConfig || !identity.participantJti || !scope.admission) return rejectApplicant(409);
+        const record = await new ParticipantIntentStore(this.redis, scope.organizationId, participantConfig.secret).get(
+          identity.participantJti
+        );
+        if (
+          !record ||
+          record.guest !== id ||
+          record.token !== state.referral ||
+          (await this.participantEligibility(
+            scope,
+            participantConfig.clientId,
+            participantConfig.secret,
+            identity.participantJti,
+            record.token
+          )) !== record.commitment
+        )
+          return rejectApplicant(409);
+        const verified = {
+          ...state,
+          vnActor: { userId: identity.userId, actorOrgId: identity.organizationId, email: identity.email },
+        };
+        const claim = await this.admitVn(scope, verified, scope.admission.hmacSecret, { action: 'person-claim' });
+        if (!object(claim) || Object.keys(claim).length !== 1 || claim.status !== 'claimed')
+          return rejectApplicant(409);
+      } else if (identity.participantJti) return rejectApplicant(409);
+      const ttl = 1800;
+      const session = await this.sessions.rotate(
+        scope,
+        key,
+        {
+          ...state,
+          vnActor: { userId: identity.userId, actorOrgId: identity.organizationId, email: identity.email },
+        },
+        ttl
+      );
+      setCookie(session.id, ttl);
+    });
+  }
+
+  async startVoltcred(scope: VoltcredDealerScope, input: unknown, _id: string | undefined, setCookie: SetCookie) {
+    if (!object(input) || Object.keys(input).length !== 1 || !isApplicantReferral(input.referral_token))
+      return rejectApplicant(400);
+    const referral = input.referral_token;
+    await this.sessions.rate(scope, 'entry', scope.origin, 300, 60);
+    await this.sessions.rate(scope, 'invite', referral, 100, 60);
+    if (!(await this.eligible(scope, referral))) return rejectApplicant(409);
+    const guest = await this.sessions.start(
+      scope,
+      { referral, device: newApplicantHandle(), publicVoltcred: true },
+      guestTtl
+    );
+    const state = await this.continuations.start(scope, guest.id, referral);
+    setCookie(guest.id, guestTtl);
+    return { authorizeUrl: dealerVoltcredAuthorizeUrl(state) };
+  }
+
+  async receiveVoltcred(scope: VoltcredDealerScope, receipt: DealerVoltcredReceipt) {
+    const code = await this.continuations.receive(scope, receipt.state, receipt, scope.voltcred.actorOrganizationId);
+    return { code };
+  }
+
+  async finishVoltcred(scope: VoltcredDealerScope, input: unknown, id: string | undefined, setCookie: SetCookie) {
+    const key = this.sessions.key(scope, id);
+    if (!key || !id || !object(input) || Object.keys(input).length !== 1 || !dealerVoltcredHandle(input.code))
+      return rejectApplicant(400);
+    const code = input.code;
+    return this.sessions.withLock(key, async () => {
+      const state = await this.sessions.get(key);
+      if (!state?.publicVoltcred || state.voltcredActor || !(await this.eligible(scope, state.referral)))
+        return rejectApplicant(409);
+      const receipt = await this.continuations.consume(scope, id, code);
+      if (receipt.referral !== state.referral || receipt.actorOrgId !== scope.voltcred.actorOrganizationId)
+        return rejectApplicant(409);
+      const session = await this.sessions.rotate(
+        scope,
+        key,
+        {
+          ...state,
+          voltcredActor: { userId: receipt.userId, actorOrgId: receipt.actorOrgId, email: receipt.email },
+        },
+        receipt.seconds
+      );
+      setCookie(session.id, receipt.seconds);
+      return { state: 'pan' as const };
+    });
+  }
+
+  private async admitVn(scope: VnDealerScope, state: State, key: string, context: Payload) {
+    const actor =
+      state.vnParticipant && ['person-claim', 'person-kyc-start', 'person-kyc-sync'].includes(String(context.action))
+        ? state.vnActor
+        : verifiedPublicActor(scope, state);
+    if (!state.publicVn || !actor || actor.actorOrgId !== scope.organizationId || !isApplicantReferral(state.referral))
+      return rejectApplicant(401);
+    const body = JSON.stringify({ input: { referral_token: state.referral, ...context } });
+    const headers = vnAdmissionHeaders(
+      {
+        organizationId: scope.organizationId,
+        issuerOrgId: actor.actorOrgId,
+        userId: actor.userId,
+        email: actor.email,
+        referral: state.referral,
+        body,
+      },
+      key
+    );
+    const response = await this.fetcher(`${scope.vn.destinyOrigin}${VN_ADMISSION_PATH}`, {
+      method: 'POST',
+      redirect: 'error',
+      cache: 'no-store',
+      signal: AbortSignal.timeout(
+        (context.action === 'financial' && ['start', 'sync', 'attach'].includes(context.operation as string)) ||
+          ['person-kyc-start', 'person-kyc-sync'].includes(String(context.action))
+          ? 45000
+          : context.action === 'completion'
+            ? 30000
+            : 5000
+      ),
+      headers: { 'Content-Type': 'application/json', 'x-gct-org-id': scope.organizationId, ...headers },
+      body,
+    });
+    if (!response.ok) return rejectApplicant(response.status === 403 ? 403 : response.status === 409 ? 409 : 503);
+    return response.json();
+  }
+
+  async participantKycVn(scope: VnDealerScope & { kycOrigin: string }, input: unknown, id: string | undefined) {
+    const key = this.sessions.key(scope, id);
+    if (!key) return rejectApplicant(401);
+    if (
+      !scope.admission ||
+      scope.admission.issuerOrgId !== scope.organizationId ||
+      scope.vn.actorOrganizationId !== scope.organizationId ||
+      Buffer.byteLength(scope.admission.hmacSecret) < 32 ||
+      !exactHttpsOrigin(scope.kycOrigin)
+    )
+      return rejectApplicant(503);
+    if (
+      !object(input) ||
+      !(
+        (input.action === 'START' &&
+          Object.keys(input).sort().join(',') === 'action,consent' &&
+          input.consent === true) ||
+        (input.action === 'SYNC' && Object.keys(input).join(',') === 'action')
+      )
+    )
+      return rejectApplicant(400);
+    return this.sessions.withLock(key, async () => {
+      const state = await this.sessions.get(key);
+      if (
+        !state?.publicVn ||
+        !state.vnParticipant ||
+        !state.vnActor ||
+        state.vnActor.actorOrgId !== scope.organizationId
+      )
+        return rejectApplicant(401);
+      if (input.action === 'SYNC' && (!state.vnParticipantKycId || !uuidPattern.test(state.vnParticipantKycId)))
+        return rejectApplicant(409);
+      const result = await this.admitVn(
+        scope,
+        state,
+        scope.admission!.hmacSecret,
+        input.action === 'START'
+          ? { action: 'person-kyc-start', consent: true }
+          : { action: 'person-kyc-sync', request_id: state.vnParticipantKycId }
+      );
+      if (
+        !object(result) ||
+        typeof result.id !== 'string' ||
+        !uuidPattern.test(result.id) ||
+        !['pending', 'evidence_received', 'failed', 'cancelled', 'unknown', 'requesting'].includes(
+          result.status as string
+        ) ||
+        (input.action === 'SYNC' && result.id !== state.vnParticipantKycId)
+      )
+        return rejectApplicant(503);
+      let gatewayUrl: string | undefined;
+      if (result.gateway_url !== undefined) {
+        if (input.action !== 'START' || result.status !== 'pending') return rejectApplicant(503);
+        gatewayUrl = dealerProviderRedirect(result.gateway_url, scope.kycOrigin);
+        if (!gatewayUrl) return rejectApplicant(503);
+      }
+      state.vnParticipantKycId = result.id;
+      await this.sessions.save(key, state);
+      return { status: result.status, ...(gatewayUrl && { gatewayUrl }) };
+    });
+  }
+
+  async participantSelfieVn(
+    scope: VnDealerScope & { kycOrigin: string },
+    read: () => Promise<Buffer>,
+    id: string | undefined
+  ) {
+    const key = this.sessions.key(scope, id);
+    if (!key || !id) return rejectApplicant(401);
+    if (
+      !scope.admission ||
+      scope.admission.issuerOrgId !== scope.organizationId ||
+      scope.vn.actorOrganizationId !== scope.organizationId ||
+      Buffer.byteLength(scope.admission.hmacSecret) < 32 ||
+      !exactHttpsOrigin(scope.kycOrigin)
+    )
+      return rejectApplicant(503);
+    const initial = await this.sessions.get(key);
+    if (
+      !initial?.publicVn ||
+      !initial.vnParticipant ||
+      !initial.vnActor ||
+      initial.vnActor.actorOrgId !== scope.organizationId ||
+      !initial.vnParticipantKycId ||
+      !uuidPattern.test(initial.vnParticipantKycId) ||
+      !isApplicantReferral(initial.referral)
+    )
+      return rejectApplicant(401);
+    await this.sessions.rate(scope, 'participant-selfie', id, 5, 60);
+    const file = await read();
+    if (!Buffer.isBuffer(file)) return rejectApplicant(400);
+    dealerSelfieData(file);
+    return this.sessions.withLock(key, async () => {
+      const state = await this.sessions.get(key);
+      const actor = state?.vnActor;
+      if (
+        !state?.publicVn ||
+        !state.vnParticipant ||
+        !actor ||
+        actor.actorOrgId !== scope.organizationId ||
+        !state.vnParticipantKycId ||
+        !uuidPattern.test(state.vnParticipantKycId) ||
+        !isApplicantReferral(state.referral)
+      )
+        return rejectApplicant(401);
+      const current = await this.admitVn(scope, state, scope.admission!.hmacSecret, {
+        action: 'person-kyc-sync',
+        request_id: state.vnParticipantKycId,
+      });
+      if (!object(current) || current.id !== state.vnParticipantKycId || current.status !== 'evidence_received')
+        return rejectApplicant(409);
+      const metadata = JSON.stringify({
+        action: 'person-selfie',
+        referral_token: state.referral,
+        request_id: state.vnParticipantKycId,
+        sha256: createHash('sha256').update(file).digest('hex'),
+      });
+      const headers = vnAdmissionHeaders(
+        {
+          organizationId: scope.organizationId,
+          issuerOrgId: actor.actorOrgId,
+          userId: actor.userId,
+          email: actor.email,
+          referral: state.referral,
+          body: metadata,
+        },
+        scope.admission!.hmacSecret,
+        undefined,
+        VN_ADMISSION_SELFIE_PATH
+      );
+      const response = await this.fetcher(`${scope.vn.destinyOrigin}${VN_ADMISSION_SELFIE_PATH}`, {
+        method: 'POST',
+        redirect: 'error',
+        cache: 'no-store',
+        signal: AbortSignal.timeout(45000),
+        headers: {
+          'content-type': 'image/jpeg',
+          'x-gct-org-id': scope.organizationId,
+          'x-admission-metadata': Buffer.from(metadata, 'utf8').toString('base64url'),
+          ...headers,
+        },
+        body: Uint8Array.from(file),
+      });
+      if (!response.ok) return rejectApplicant([409, 422].includes(response.status) ? 409 : 503);
+      const result = await response.json();
+      if (!object(result) || Object.keys(result).join(',') !== 'selfie_verified' || result.selfie_verified !== true)
+        return rejectApplicant(503);
+      return { selfie_verified: true };
+    });
+  }
+
+  async sessionVn(scope: VnDealerScope, input: unknown, id: string | undefined) {
+    if (!scope.admission) return { ...(await this.statusVoltcred(scope, input, id)), admission: false };
+    if (!object(input) || Object.keys(input).length) return rejectApplicant(400);
+    const key = this.sessions.key(scope, id);
+    const state = key ? await this.sessions.get(key) : null;
+    if (state?.publicVn && state.vnParticipant && state.vnActor?.actorOrgId === scope.organizationId)
+      return {
+        state: 'claimed',
+        admission: true,
+        kycStarted: Boolean(state.vnParticipantKycId && uuidPattern.test(state.vnParticipantKycId)),
+      };
+    if (!state || !state.publicVn || !verifiedPublicActor(scope, state)) return { state: 'invite', admission: true };
+    if (state.vnAdmissionDraftId) return { state: 'bound', admission: true };
+    if (state.pan && panPattern.test(state.pan))
+      return {
+        state: 'details',
+        category: { C: 'company', F: 'firm', P: 'proprietorship' }[state.pan[3]],
+        admission: true,
+      };
+    return { state: 'pan', admission: true };
+  }
+
+  async lookupVnAdmission(scope: VnDealerScope, input: unknown, id: string | undefined) {
+    const key = this.sessions.key(scope, id);
+    if (!key) return rejectApplicant(401);
+    if (
+      !object(input) ||
+      Object.keys(input).length !== 1 ||
+      typeof input.pan !== 'string' ||
+      !panPattern.test(input.pan)
+    )
+      return rejectApplicant(400);
+    const pan = input.pan;
+    return this.sessions.withLock(key, async () => {
+      const state = await this.sessions.get(key);
+      if (!state || !state.publicVn || !verifiedPublicActor(scope, state)) return rejectApplicant(401);
+      if (state.vnAdmissionDraftId || state.vnAdmissionInput) return rejectApplicant(409);
+      await this.sessions.save(key, { ...state, pan });
+      return { state: 'details', category: { C: 'company', F: 'firm', P: 'proprietorship' }[pan[3]], admission: true };
+    });
+  }
+
+  async openVnAdmission(scope: VnDealerScope, input: unknown, id: string | undefined) {
+    if (
+      !object(input) ||
+      Object.keys(input).some((k) => !['businessName', 'applicantName', 'firmType'].includes(k)) ||
+      typeof input.businessName !== 'string' ||
+      typeof input.applicantName !== 'string' ||
+      !input.applicantName.trim() ||
+      input.applicantName.length > 255 ||
+      (input.firmType !== undefined && !['partnership', 'llp'].includes(input.firmType as string))
+    )
+      return rejectApplicant(400);
+    const key = this.sessions.key(scope, id);
+    const state = key ? await this.sessions.get(key) : null;
+    if (!state || !state.publicVn || !verifiedPublicActor(scope, state) || !state.pan) return rejectApplicant(401);
+    return this.admitVnAction(
+      scope,
+      {
+        pan: state.pan,
+        partner_name: input.businessName,
+        ...(input.firmType && { firm_type: input.firmType }),
+        ...(state.pan[3] === 'P' && { proprietor_name: input.applicantName }),
+      },
+      id
+    );
+  }
+
+  async admitVnAction(scope: VnDealerScope, input: unknown, id: string | undefined) {
+    const key = this.sessions.key(scope, id);
+    if (!key) return rejectApplicant(401);
+    if (
+      !scope.admission ||
+      scope.admission.issuerOrgId !== scope.organizationId ||
+      scope.vn.actorOrganizationId !== scope.organizationId ||
+      Buffer.byteLength(scope.admission.hmacSecret) < 32
+    )
+      return rejectApplicant(503);
+    const allowed = ['pan', 'partner_name', 'gst', 'mobile', 'firm_type', 'proprietor_name'];
+    if (
+      !object(input) ||
+      Object.keys(input).some((name) => !allowed.includes(name)) ||
+      typeof input.pan !== 'string' ||
+      !panPattern.test(input.pan) ||
+      typeof input.partner_name !== 'string' ||
+      !input.partner_name.trim() ||
+      input.partner_name.length > 255 ||
+      allowed
+        .slice(2)
+        .some(
+          (name) =>
+            input[name] !== undefined &&
+            (typeof input[name] !== 'string' || !(input[name] as string).trim() || (input[name] as string).length > 255)
+        )
+    )
+      return rejectApplicant(400);
+    const context = Object.fromEntries(
+      allowed.filter((name) => input[name] !== undefined).map((name) => [name, input[name]])
+    );
+    return this.sessions.withLock(key, async () => {
+      const state = await this.sessions.get(key);
+      if (!state || !verifiedPublicActor(scope, state)) return rejectApplicant(401);
+      if (state.vnAdmissionInput && JSON.stringify(state.vnAdmissionInput) !== JSON.stringify(context))
+        return rejectApplicant(409);
+      if (state.vnAdmissionDraftId) return { state: 'admitted' as const, draftId: state.vnAdmissionDraftId };
+      if (!state.vnAdmissionInput) {
+        state.vnAdmissionInput = context;
+        await this.sessions.save(key, state);
+      }
+      const result = await this.admitVn(scope, state, scope.admission!.hmacSecret, context);
+      if (
+        !object(result) ||
+        typeof result.draft_id !== 'string' ||
+        !uuidPattern.test(result.draft_id) ||
+        !Number.isSafeInteger(result.version) ||
+        (result.version as number) < 1 ||
+        typeof result.status !== 'string'
+      )
+        return rejectApplicant(503);
+      state.vnAdmissionDraftId = result.draft_id;
+      await this.sessions.save(key, state);
+      return { state: 'admitted' as const, draftId: result.draft_id };
+    });
+  }
+
+  async resumeVnAdmission(scope: VnDealerScope, input: unknown, id: string | undefined) {
+    const key = this.sessions.key(scope, id);
+    if (!key) return rejectApplicant(401);
+    if (
+      !scope.admission ||
+      scope.admission.issuerOrgId !== scope.organizationId ||
+      scope.vn.actorOrganizationId !== scope.organizationId ||
+      Buffer.byteLength(scope.admission.hmacSecret) < 32
+    )
+      return rejectApplicant(503);
+    if (!object(input) || Object.keys(input).length !== 0) return rejectApplicant(400);
+    return this.sessions.withLock(key, async () => {
+      const state = await this.sessions.get(key);
+      if (!state || !verifiedPublicActor(scope, state) || !state.publicVn) return rejectApplicant(401);
+      if (!state.vnAdmissionDraftId || !uuidPattern.test(state.vnAdmissionDraftId)) return rejectApplicant(409);
+      const draftId = state.vnAdmissionDraftId;
+      const result = await this.admitVn(scope, state, scope.admission!.hmacSecret, {
+        action: 'resume',
+        draft_id: draftId,
+      });
+      if (
+        !object(result) ||
+        result.draft_id !== draftId ||
+        !Number.isSafeInteger(result.version) ||
+        (result.version as number) < 1 ||
+        typeof result.status !== 'string' ||
+        !['in_progress', 'submitted', 'changes_requested', 'approved', 'rejected'].includes(result.status)
+      )
+        return rejectApplicant(503);
+      const stage = result.intake_stage;
+      const requested = result.requested_document_codes;
+      if (stage !== undefined && (typeof stage !== 'string' || !dealerStages.some((value) => value === stage)))
+        return rejectApplicant(503);
+      if (
+        requested !== undefined &&
+        (!Array.isArray(requested) ||
+          requested.some(
+            (code) => !['business_premises_photo', 'utility_bill', 'additional_documents'].includes(code)
+          ) ||
+          new Set(requested).size !== requested.length)
+      )
+        return rejectApplicant(503);
+      return {
+        draftId,
+        version: result.version,
+        status: result.status,
+        ...(stage !== undefined && { intake_stage: stage }),
+        ...(requested !== undefined && { requested_document_codes: requested }),
+      };
+    });
+  }
+
+  async uploadVnAdmissionDocument(scope: VnDealerScope, read: () => Promise<unknown>, id: string | undefined) {
+    const key = this.sessions.key(scope, id);
+    if (!key || !id) return rejectApplicant(401);
+    if (
+      !scope.admission ||
+      scope.admission.issuerOrgId !== scope.organizationId ||
+      scope.vn.actorOrganizationId !== scope.organizationId ||
+      Buffer.byteLength(scope.admission.hmacSecret) < 32
+    )
+      return rejectApplicant(503);
+    const initial = await this.sessions.get(key);
+    if (!initial?.publicVn || !initial.vnAdmissionDraftId || !verifiedPublicActor(scope, initial))
+      return rejectApplicant(401);
+    await this.sessions.rate(scope, 'upload', id, 20, 120);
+    const input = await read();
+    if (
+      !object(input) ||
+      Object.keys(input).some((k) => !['code', 'file', 'location'].includes(k)) ||
+      typeof input.code !== 'string' ||
+      !Buffer.isBuffer(input.file) ||
+      !input.file.length ||
+      input.file.length > maxDealerDocumentBytes
+    )
+      return rejectApplicant(400);
+    const { code, file, location } = input;
+    return this.sessions.withLock(key, async () => {
+      const state = await this.sessions.get(key);
+      const actor = state && verifiedPublicActor(scope, state);
+      if (!state?.publicVn || !actor || !state.vnAdmissionDraftId || !uuidPattern.test(state.vnAdmissionDraftId))
+        return rejectApplicant(401);
+      const draft = await this.admitVn(scope, state, scope.admission!.hmacSecret, {
+        action: 'resume',
+        draft_id: state.vnAdmissionDraftId,
+      });
+      if (
+        !object(draft) ||
+        draft.draft_id !== state.vnAdmissionDraftId ||
+        !Number.isSafeInteger(draft.version) ||
+        (draft.version as number) < 1 ||
+        !['in_progress', 'changes_requested'].includes(draft.status as string)
+      )
+        return rejectApplicant(409);
+      const requested = draft.requested_document_codes ?? [];
+      if (
+        !Array.isArray(requested) ||
+        requested.some((c) => !['business_premises_photo', 'utility_bill', 'additional_documents'].includes(c)) ||
+        new Set(requested).size !== requested.length
+      )
+        return rejectApplicant(503);
+      const allowed =
+        draft.intake_stage === 'premises_photo'
+          ? ['business_premises_photo']
+          : draft.intake_stage === 'electricity_bill'
+            ? ['utility_bill']
+            : draft.intake_stage === 'additional_documents'
+              ? requested.length
+                ? requested
+                : ['additional_documents']
+              : [];
+      if (!allowed.includes(code)) return rejectApplicant(409);
+      const camera = code === 'business_premises_photo';
+      if (
+        camera
+          ? !validCameraLocation(location) || !validDocument('photo', file, undefined)
+          : !validDocument('file', file, location)
+      )
+        return rejectApplicant(400);
+      const metadata = JSON.stringify({
+        input: {
+          action: 'document-upload',
+          referral_token: state.referral,
+          draft_id: state.vnAdmissionDraftId,
+          code,
+          version: draft.version,
+          location: camera ? location : null,
+          sha256: createHash('sha256').update(file).digest('hex'),
+        },
+      });
+      const headers = vnAdmissionHeaders(
+        {
+          organizationId: scope.organizationId,
+          issuerOrgId: actor.actorOrgId,
+          userId: actor.userId,
+          email: actor.email,
+          referral: state.referral,
+          body: metadata,
+        },
+        scope.admission!.hmacSecret,
+        undefined,
+        VN_ADMISSION_DOCUMENT_PATH
+      );
+      const body = new FormData();
+      body.append('metadata', metadata);
+      body.append('file', new Blob([new Uint8Array(file)]), 'evidence');
+      const response = await this.fetcher(`${scope.vn.destinyOrigin}${VN_ADMISSION_DOCUMENT_PATH}`, {
+        method: 'POST',
+        redirect: 'error',
+        cache: 'no-store',
+        signal: AbortSignal.timeout(35000),
+        headers: { 'x-gct-org-id': scope.organizationId, ...headers },
+        body,
+      });
+      if (!response.ok) return rejectApplicant([409, 422].includes(response.status) ? 409 : 503);
+      return { uploaded: true };
+    });
+  }
+
+  async rosterVn(scope: VnDealerScope, input: unknown, id: string | undefined) {
+    const key = this.sessions.key(scope, id);
+    if (!key) return rejectApplicant(401);
+    if (
+      !scope.admission ||
+      scope.admission.issuerOrgId !== scope.organizationId ||
+      scope.vn.actorOrganizationId !== scope.organizationId ||
+      Buffer.byteLength(scope.admission.hmacSecret) < 32
+    )
+      return rejectApplicant(503);
+    if (!object(input) || !['state', 'save', 'issue', 'revoke'].includes(input.operation as string))
+      return rejectApplicant(400);
+    const save = input.operation === 'save';
+    const invite = input.operation === 'issue' || input.operation === 'revoke';
+    const keys = save
+      ? ['operation', 'version', 'details', 'people']
+      : invite
+        ? ['operation', 'version', 'slot_id']
+        : ['operation'];
+    if (
+      invite &&
+      (!Number.isSafeInteger(input.version) ||
+        (input.version as number) < 1 ||
+        typeof input.slot_id !== 'string' ||
+        !/^person[a-f0-9]{32}$/.test(input.slot_id))
+    )
+      return rejectApplicant(400);
+    if (Object.keys(input).length !== keys.length || Object.keys(input).some((k) => !keys.includes(k)))
+      return rejectApplicant(400);
+    const detailsKeys = ['mobile', 'premises', 'cin', 'llpin'];
+    const personKeys = ['slot_id', 'name', 'email', 'din'];
+    const detailsValid = (value: unknown): value is Record<string, string> =>
+      object(value) &&
+      Object.keys(value).length === detailsKeys.length &&
+      detailsKeys.every((k) => typeof value[k] === 'string' && (value[k] as string).length <= 255);
+    const peopleValid = (value: unknown, allowNew: boolean) =>
+      Array.isArray(value) &&
+      value.length <= 30 &&
+      value.every(
+        (person) =>
+          object(person) &&
+          Object.keys(person).length === personKeys.length &&
+          personKeys.every((k) => Object.hasOwn(person, k)) &&
+          ((allowNew && person.slot_id === null) ||
+            (typeof person.slot_id === 'string' && /^person[a-f0-9]{32}$/.test(person.slot_id))) &&
+          ['name', 'email', 'din'].every((k) => typeof person[k] === 'string' && (person[k] as string).length <= 255)
+      ) &&
+      new Set(value.filter((person) => person.slot_id !== null).map((person) => person.slot_id)).size ===
+        value.filter((person) => person.slot_id !== null).length;
+    if (
+      save &&
+      (!Number.isSafeInteger(input.version) ||
+        (input.version as number) < 1 ||
+        !detailsValid(input.details) ||
+        !peopleValid(input.people, true))
+    )
+      return rejectApplicant(400);
+    return this.sessions.withLock(key, async () => {
+      const state = await this.sessions.get(key);
+      if (!state || !state.publicVn || !verifiedPublicActor(scope, state)) return rejectApplicant(401);
+      const draftId = state.vnAdmissionDraftId;
+      if (!draftId || !uuidPattern.test(draftId)) return rejectApplicant(409);
+      const current = await this.admitVn(scope, state, scope.admission!.hmacSecret, {
+        action: 'resume',
+        draft_id: draftId,
+      });
+      if (
+        !object(current) ||
+        current.draft_id !== draftId ||
+        current.status !== 'in_progress' ||
+        current.intake_stage !== 'people' ||
+        !Number.isSafeInteger(current.version) ||
+        (current.version as number) < 1 ||
+        ((save || invite) && input.version !== current.version)
+      )
+        return rejectApplicant(409);
+      const version = current.version as number;
+      if (invite) {
+        const response = await this.admitVn(scope, state, scope.admission!.hmacSecret, {
+          action: 'person-invite',
+          draft_id: draftId,
+          operation: input.operation,
+          input: { version, slot_id: input.slot_id },
+        });
+        if (!object(response) || response.version !== version + 1) return rejectApplicant(503);
+        if (input.operation === 'revoke') return { version: response.version };
+        if (
+          typeof response.url !== 'string' ||
+          typeof response.expires_at !== 'string' ||
+          !Number.isFinite(Date.parse(response.expires_at)) ||
+          !scope.vn.viewerUrl
+        )
+          return rejectApplicant(503);
+        try {
+          const url = new URL(response.url),
+            base = new URL(scope.vn.viewerUrl);
+          const tokens = url.searchParams.getAll('participant');
+          if (
+            tokens.length !== 1 ||
+            [...url.searchParams.keys()].length !== 1 ||
+            !/^v3\.[A-Za-z0-9_-]{39,1021}$/.test(tokens[0])
+          )
+            return rejectApplicant(503);
+          url.searchParams.delete('participant');
+          if (url.href !== base.href) return rejectApplicant(503);
+        } catch {
+          return rejectApplicant(503);
+        }
+        return { version: response.version, url: response.url, expires_at: response.expires_at };
+      }
+      let submittedPeople = input.people;
+      if (save) {
+        const saved = await this.admitVn(scope, state, scope.admission!.hmacSecret, {
+          action: 'people',
+          draft_id: draftId,
+          operation: 'state',
+          input: { version },
+        });
+        if (!object(saved) || saved.version !== version || !peopleValid(saved.people, false))
+          return rejectApplicant(503);
+        const contacts = new Map((saved.people as Record<string, string>[]).map((p) => [p.slot_id, p.email]));
+        submittedPeople = (input.people as Record<string, string>[]).map((p) => ({
+          ...p,
+          email: p.email || contacts.get(p.slot_id) || '',
+        }));
+      }
+      const result = await this.admitVn(scope, state, scope.admission!.hmacSecret, {
+        action: 'people',
+        draft_id: draftId,
+        operation: input.operation,
+        input: { version, ...(save && { details: input.details, people: submittedPeople }) },
+      });
+      if (
+        !object(result) ||
+        !Number.isSafeInteger(result.version) ||
+        (save ? result.version !== version && result.version !== version + 1 : result.version !== version) ||
+        !['company', 'proprietorship', 'partnership', 'llp'].includes(result.entity as string) ||
+        !object(result.details) ||
+        !Array.isArray(result.people)
+      )
+        return rejectApplicant(503);
+      const resultDetails = result.details;
+      const details = Object.fromEntries(detailsKeys.map((k) => [k, resultDetails[k]]));
+      const people = result.people.map((person) =>
+        object(person) ? Object.fromEntries(personKeys.map((k) => [k, person[k]])) : person
+      );
+      if (!detailsValid(details) || !peopleValid(people, false)) return rejectApplicant(503);
+      return {
+        version: result.version,
+        entity: result.entity,
+        details,
+        people: people.map((p: any) => ({ slot_id: p.slot_id, name: p.name, din: p.din, hasEmail: Boolean(p.email) })),
+      };
+    });
+  }
+
+  async financialVn(scope: VnDealerScope & { bankConsentOrigin: string }, input: unknown, id: string | undefined) {
+    const key = this.sessions.key(scope, id);
+    if (!key) return rejectApplicant(401);
+    if (
+      !scope.admission ||
+      scope.admission.issuerOrgId !== scope.organizationId ||
+      scope.vn.actorOrganizationId !== scope.organizationId ||
+      Buffer.byteLength(scope.admission.hmacSecret) < 32 ||
+      !exactHttpsOrigin(scope.bankConsentOrigin)
+    )
+      return rejectApplicant(503);
+    if (
+      !object(input) ||
+      !['bank', 'gst'].includes(input.purpose as string) ||
+      !['start', 'status', 'sync', 'options', 'attach'].includes(input.operation as string)
+    )
+      return rejectApplicant(400);
+    const purpose = input.purpose as FinancialPurpose;
+    const operation = input.operation as 'start' | 'status' | 'sync' | 'options' | 'attach';
+    const allowed =
+      operation === 'start'
+        ? ['purpose', 'operation', 'mobile']
+        : operation === 'attach'
+          ? ['purpose', 'operation', 'key']
+          : ['purpose', 'operation'];
+    if (Object.keys(input).length !== allowed.length || Object.keys(input).some((name) => !allowed.includes(name)))
+      return rejectApplicant(400);
+    const mobile = operation === 'start' ? normalizeApplicantPhone(input.mobile) : null;
+    if (operation === 'start' && !mobile) return rejectApplicant(400);
+    if (operation === 'attach' && (typeof input.key !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(input.key)))
+      return rejectApplicant(400);
+    return this.sessions.withLock(key, async () => {
+      const state = await this.sessions.get(key);
+      if (!state || !state.publicVn || !verifiedPublicActor(scope, state)) return rejectApplicant(401);
+      const draftId = state.vnAdmissionDraftId;
+      if (!draftId || !uuidPattern.test(draftId)) return rejectApplicant(409);
+      const attemptKey = purpose === 'bank' ? 'bankAa' : 'gstAa';
+      const attempt = state[attemptKey];
+      if (operation === 'start' && attempt && attempt.mobile !== mobile) return rejectApplicant(409);
+      if (operation !== 'start' && (!attempt?.requestId || !uuidPattern.test(attempt.requestId)))
+        return rejectApplicant(409);
+      const ref = operation === 'attach' && typeof input.key === 'string' ? attempt?.choices?.[input.key] : undefined;
+      if (operation === 'attach' && !ref) return rejectApplicant(409);
+      if (operation === 'start' && !attempt) {
+        state[attemptKey] = { mobile: mobile! };
+        await this.sessions.save(key, state);
+      }
+      const current = await this.admitVn(scope, state, scope.admission!.hmacSecret, {
+        action: 'resume',
+        draft_id: draftId,
+      });
+      if (
+        !object(current) ||
+        current.draft_id !== draftId ||
+        !Number.isSafeInteger(current.version) ||
+        (current.version as number) < 1 ||
+        current.status !== 'in_progress'
+      )
+        return rejectApplicant(409);
+      const version = current.version as number;
+      const requestId = operation === 'start' ? `public-dealer-${purpose}:${draftId}` : attempt!.requestId!;
+      const result = await this.admitVn(scope, state, scope.admission!.hmacSecret, {
+        action: 'financial',
+        draft_id: draftId,
+        purpose,
+        operation,
+        input: { version, request_id: requestId, ...(mobile && { mobile }), ...(ref && { linked_account_ref: ref }) },
+      });
+      if (operation === 'options') {
+        const accounts = this.financialAccounts(
+          purpose === 'gst' && object(result) ? { gst_accounts: result.accounts } : result,
+          purpose
+        );
+        const choices: Record<string, string> = {};
+        const safe = accounts.map(({ ref: accountRef, masked }) => {
+          const choice = newApplicantHandle();
+          choices[choice] = accountRef;
+          return purpose === 'bank'
+            ? { key: choice, maskedAccountNumber: masked }
+            : { key: choice, maskedGstin: masked };
+        });
+        state[attemptKey] = { ...attempt!, choices };
+        await this.sessions.save(key, state);
+        return { accounts: safe };
+      }
+      if (operation === 'attach') {
+        if (
+          !object(result) ||
+          !Number.isSafeInteger(result.version) ||
+          (result.version !== version && result.version !== version + 1)
+        )
+          return rejectApplicant(503);
+        state[attemptKey] = undefined;
+        await this.sessions.save(key, state);
+        return { version: result.version };
+      }
+      if (!object(result)) return rejectApplicant(503);
+      const { id: request, ...safe } = this.financialView(
+        { ...result, integration: 'saafe' },
+        scope.bankConsentOrigin,
+        attempt?.requestId
+      );
+      if (operation === 'start') {
+        state[attemptKey] = { mobile: mobile!, requestId: request };
+        await this.sessions.save(key, state);
+      }
+      return safe;
+    });
+  }
+
+  private async voltcredIntakeRequest(
+    scope: PublicDealerScope,
+    userId: string,
+    operation: 'lookup' | 'open',
+    input: Payload
+  ) {
+    const suffix = operation === 'lookup' ? '/lookup' : '';
+    const response = await this.fetcher(
+      `${publicActorScope(scope).destinyOrigin}/v1/channel-partners/intakes${suffix}`,
+      {
+        method: 'POST',
+        redirect: 'error',
+        cache: 'no-store',
+        signal: AbortSignal.timeout(5000),
+        headers: { 'Content-Type': 'application/json', 'x-gct-org-id': scope.organizationId, 'x-gct-user-id': userId },
+        body: JSON.stringify({ input }),
+      }
+    );
+    if (!response.ok) return rejectApplicant(response.status === 409 ? 409 : 503);
+    return response.json();
+  }
+
+  async lookupVoltcred(scope: PublicDealerScope, input: unknown, id: string | undefined) {
+    const key = this.sessions.key(scope, id);
+    if (!key) return rejectApplicant(401);
+    if (
+      !object(input) ||
+      Object.keys(input).length !== 1 ||
+      typeof input.pan !== 'string' ||
+      !panPattern.test(input.pan)
+    )
+      return rejectApplicant(400);
+    const pan = input.pan;
+    return this.sessions.withLock(key, async () => {
+      const state = await this.sessions.get(key);
+      const actor = verifiedPublicActor(scope, state);
+      if (!state || !actor) return rejectApplicant(401);
+      if (state.draftId && state.pan !== pan) return rejectApplicant(409);
+      const result = await this.voltcredIntakeRequest(scope, actor.userId, 'lookup', {
+        pan,
+        referral_token: state.referral,
+      });
+      const category = { C: 'company', F: 'firm', P: 'proprietorship' }[pan[3]];
+      if (result?.status === 'new' && result.entity === category && !state.draftId) {
+        await this.sessions.save(key, { ...state, pan });
+        return { state: 'details' as const, category };
+      }
+      if (result?.status !== 'resume') return rejectApplicant(503);
+      const draft = voltcredDraft(result.intake, scope.organizationId);
+      if (state.draftId && state.draftId !== draft.id) return rejectApplicant(409);
+      await this.sessions.save(key, { ...state, pan, draftId: draft.id });
+      return { state: 'resume' as const, draft };
+    });
+  }
+
+  async openVoltcred(scope: PublicDealerScope, input: unknown, id: string | undefined) {
+    const key = this.sessions.key(scope, id);
+    if (!key) return rejectApplicant(401);
+    if (
+      !object(input) ||
+      Object.keys(input).some((name) => !['businessName', 'applicantName', 'firmType'].includes(name))
+    )
+      return rejectApplicant(400);
+    const { businessName, applicantName, firmType } = input;
+    if (
+      typeof businessName !== 'string' ||
+      !businessName.trim() ||
+      businessName.length > 255 ||
+      typeof applicantName !== 'string' ||
+      !applicantName.trim() ||
+      applicantName.length > 255
+    )
+      return rejectApplicant(400);
+    return this.sessions.withLock(key, async () => {
+      const state = await this.sessions.get(key);
+      const actor = verifiedPublicActor(scope, state);
+      if (!state || !actor) return rejectApplicant(401);
+      const pan = state.pan;
+      if (!pan || !panPattern.test(pan) || state.draftId) return rejectApplicant(409);
+      if (pan[3] === 'F' ? firmType !== 'llp' && firmType !== 'partnership' : firmType !== undefined)
+        return rejectApplicant(400);
+      const role = { C: 'Director', P: 'Proprietor', F: firmType === 'llp' ? 'Designated partner' : 'Partner' }[pan[3]];
+      const result = await this.voltcredIntakeRequest(scope, actor.userId, 'open', {
+        referral_token: state.referral,
+        dossier: {
+          details: {
+            pan,
+            partner_name: businessName.trim(),
+            email: actor.email,
+            ...(typeof firmType === 'string' && { firm_type: firmType }),
+          },
+          people: [
+            { id: 'person1', user_id: actor.userId, name: applicantName.trim(), role, kyc_contact: actor.email },
+          ],
+        },
+      });
+      const draft = voltcredDraft(result, scope.organizationId);
+      await this.sessions.save(key, { ...state, draftId: draft.id });
+      return { state: 'draft' as const, draft };
+    });
+  }
+
+  private async readVoltcredDraft(scope: PublicDealerScope, state: State) {
+    const actor = verifiedPublicActor(scope, state);
+    if (!actor || !state.draftId || !state.pan) return rejectApplicant(401);
+    const headers = { 'x-gct-org-id': scope.organizationId, 'x-gct-user-id': actor.userId };
+    const response = await this.fetcher(
+      `${publicActorScope(scope).destinyOrigin}/v1/channel-partners/intakes/${state.draftId}`,
+      {
+        method: 'GET',
+        redirect: 'error',
+        cache: 'no-store',
+        signal: AbortSignal.timeout(5000),
+        headers,
+      }
+    );
+    if (!response.ok) return rejectApplicant(503);
+    const data = await response.json();
+    const draft = voltcredDraft(data, scope.organizationId);
+    if (draft.id !== state.draftId) return rejectApplicant(409);
+    return { draft, canWrite: data.can_write === true, pan: state.pan, headers, data };
+  }
+
+  private async financialDraft(scope: VoltcredBankScope, state: State, purpose: FinancialPurpose) {
+    const { draft, canWrite, pan, headers } = await this.readVoltcredDraft(scope, state);
+    if (draft.stage !== purpose || !canWrite) return rejectApplicant(409);
+    return { ...draft, pan, headers };
+  }
+
+  private financialView(result: unknown, origin: string, expectedId?: string) {
+    const statuses = [
+      'unknown',
+      'pending',
+      'completed',
+      'failed',
+      'cancelled',
+      'not_started',
+      'cancel_requested',
+      'cancel_unknown',
+    ];
+    if (
+      !object(result) ||
+      typeof result.id !== 'string' ||
+      !uuidPattern.test(result.id) ||
+      (expectedId && result.id !== expectedId) ||
+      result.integration !== 'saafe' ||
+      typeof result.status !== 'string' ||
+      !statuses.includes(result.status)
+    )
+      return rejectApplicant(503);
+    let consentUrl: string | undefined;
+    if (result.status === 'pending' && result.gateway_url !== undefined) {
+      if (typeof result.gateway_url !== 'string' || result.gateway_url.length > 4096) return rejectApplicant(503);
+      try {
+        const url = new URL(result.gateway_url);
+        if (url.origin !== origin || url.username || url.password || url.protocol !== 'https:')
+          return rejectApplicant(503);
+        consentUrl = url.href;
+      } catch {
+        return rejectApplicant(503);
+      }
+    }
+    return { id: result.id, status: result.status, ...(consentUrl && { consentUrl }) };
+  }
+
+  async startFinancialVoltcred(
+    purpose: FinancialPurpose,
+    scope: VoltcredBankScope,
+    input: unknown,
+    id: string | undefined
+  ) {
+    const key = this.sessions.key(scope, id);
+    if (!key) return rejectApplicant(401);
+    const mobile = object(input) && Object.keys(input).length === 1 ? normalizeApplicantPhone(input.mobile) : null;
+    if (!exactHttpsOrigin(scope.bankConsentOrigin) || !mobile) return rejectApplicant(400);
+    return this.sessions.withLock(key, async () => {
+      const attemptKey = purpose === 'bank' ? 'bankAa' : 'gstAa';
+      const state = await this.sessions.get(key);
+      if (!state) return rejectApplicant(401);
+      const draft = await this.financialDraft(scope, state, purpose);
+      if (state[attemptKey] && state[attemptKey].mobile !== mobile) return rejectApplicant(409);
+      if (!state[attemptKey]) await this.sessions.save(key, { ...state, [attemptKey]: { mobile } });
+      // Use the same reservation key after a lost response so Destiny can return the existing attempt.
+      const requestId = `public-dealer-${purpose}:${draft.id}`;
+      const response = await this.fetcher(
+        `${publicActorScope(scope).destinyOrigin}/v1/channel-partners/financial-data`,
+        {
+          method: 'POST',
+          redirect: 'error',
+          cache: 'no-store',
+          signal: AbortSignal.timeout(45000),
+          headers: { 'Content-Type': 'application/json', ...draft.headers },
+          body: JSON.stringify({
+            input: {
+              purpose,
+              request_id: requestId,
+              pan: draft.pan,
+              mobile,
+              draft_id: draft.id,
+              version: draft.version,
+            },
+          }),
+        }
+      );
+      if (!response.ok) return rejectApplicant(response.status === 409 ? 409 : 503);
+      const { id: request, ...safe } = this.financialView(
+        await response.json(),
+        scope.bankConsentOrigin,
+        state[attemptKey]?.requestId
+      );
+      await this.sessions.save(key, { ...state, [attemptKey]: { mobile, requestId: request } });
+      return safe;
+    });
+  }
+
+  async statusFinancialVoltcred(
+    purpose: FinancialPurpose,
+    scope: VoltcredBankScope,
+    input: unknown,
+    id: string | undefined
+  ) {
+    const key = this.sessions.key(scope, id);
+    if (!key) return rejectApplicant(401);
+    if (!exactHttpsOrigin(scope.bankConsentOrigin) || !object(input) || Object.keys(input).length)
+      return rejectApplicant(400);
+    return this.sessions.withLock(key, async () => {
+      const attemptKey = purpose === 'bank' ? 'bankAa' : 'gstAa';
+      const state = await this.sessions.get(key);
+      if (!state) return rejectApplicant(401);
+      const draft = await this.financialDraft(scope, state, purpose);
+      const requestId = state[attemptKey]?.requestId;
+      if (!requestId || !uuidPattern.test(requestId)) return rejectApplicant(409);
+      const response = await this.fetcher(
+        `${publicActorScope(scope).destinyOrigin}/v1/channel-partners/financial-data/${requestId}?draft_id=${draft.id}&purpose=${purpose}`,
+        {
+          method: 'GET',
+          redirect: 'error',
+          cache: 'no-store',
+          signal: AbortSignal.timeout(5000),
+          headers: draft.headers,
+        }
+      );
+      if (!response.ok) return rejectApplicant(503);
+      const { id: _requestId, ...safe } = this.financialView(await response.json(), scope.bankConsentOrigin, requestId);
+      return safe;
+    });
+  }
+
+  private async financialAction(
+    scope: VoltcredBankScope,
+    purpose: FinancialPurpose,
+    attempt: FinancialAttempt | undefined,
+    draft: Awaited<ReturnType<DealerOnboarding['financialDraft']>>,
+    action: 'sync' | 'options'
+  ) {
+    const requestId = attempt?.requestId;
+    if (!requestId || !uuidPattern.test(requestId)) return rejectApplicant(409);
+    const response = await this.fetcher(
+      `${publicActorScope(scope).destinyOrigin}/v1/channel-partners/financial-data/${requestId}/${action === 'sync' ? action : purpose + '-options'}?draft_id=${draft.id}&purpose=${purpose}`,
+      {
+        method: 'POST',
+        redirect: 'error',
+        cache: 'no-store',
+        signal: AbortSignal.timeout(action === 'sync' ? 45000 : 5000),
+        headers: draft.headers,
+      }
+    );
+    if (!response.ok) return rejectApplicant(response.status === 409 ? 409 : 503);
+    return response.json();
+  }
+
+  private financialAccounts(data: unknown, purpose: FinancialPurpose) {
+    const accounts = object(data) && data[purpose === 'bank' ? 'accounts' : 'gst_accounts'];
+    if (!Array.isArray(accounts) || accounts.length > 100) return rejectApplicant(503);
+    const seen = new Set<string>();
+    const mask = purpose === 'bank' ? /^[Xx*]+\d{1,4}$/ : /^[0-9]{2}[Xx*]{10}[0-9A-Z]{3}$/;
+    return accounts.map((account: unknown) => {
+      if (!object(account)) return rejectApplicant(503);
+      const ref = account.linked_account_ref;
+      const masked = account[purpose === 'bank' ? 'masked_account_number' : 'masked_gstin'];
+      if (
+        typeof ref !== 'string' ||
+        !ref ||
+        ref.length > 512 ||
+        seen.has(ref) ||
+        typeof masked !== 'string' ||
+        masked.length > 128 ||
+        !mask.test(masked)
+      )
+        return rejectApplicant(503);
+      seen.add(ref);
+      return { ref, masked };
+    });
+  }
+
+  async syncFinancialVoltcred(
+    purpose: FinancialPurpose,
+    scope: VoltcredBankScope,
+    input: unknown,
+    id: string | undefined
+  ) {
+    const key = this.sessions.key(scope, id);
+    if (!key) return rejectApplicant(401);
+    if (!exactHttpsOrigin(scope.bankConsentOrigin) || !object(input) || Object.keys(input).length)
+      return rejectApplicant(400);
+    return this.sessions.withLock(key, async () => {
+      const attemptKey = purpose === 'bank' ? 'bankAa' : 'gstAa';
+      const state = await this.sessions.get(key);
+      if (!state) return rejectApplicant(401);
+      const draft = await this.financialDraft(scope, state, purpose);
+      const { id: _id, ...safe } = this.financialView(
+        await this.financialAction(scope, purpose, state[attemptKey], draft, 'sync'),
+        scope.bankConsentOrigin,
+        state[attemptKey]?.requestId
+      );
+      return safe;
+    });
+  }
+
+  async optionsFinancialVoltcred(
+    purpose: FinancialPurpose,
+    scope: VoltcredBankScope,
+    input: unknown,
+    id: string | undefined
+  ) {
+    const key = this.sessions.key(scope, id);
+    if (!key) return rejectApplicant(401);
+    if (!exactHttpsOrigin(scope.bankConsentOrigin) || !object(input) || Object.keys(input).length)
+      return rejectApplicant(400);
+    return this.sessions.withLock(key, async () => {
+      const attemptKey = purpose === 'bank' ? 'bankAa' : 'gstAa';
+      const state = await this.sessions.get(key);
+      if (!state) return rejectApplicant(401);
+      const draft = await this.financialDraft(scope, state, purpose);
+      const attempt = state[attemptKey];
+      if (!attempt?.requestId) return rejectApplicant(409);
+      const accounts = this.financialAccounts(
+        await this.financialAction(scope, purpose, state[attemptKey], draft, 'options'),
+        purpose
+      );
+      const choices: Record<string, string> = {};
+      const safe = accounts.map(({ ref, masked }) => {
+        const choice = newApplicantHandle();
+        choices[choice] = ref;
+        return purpose === 'bank' ? { key: choice, maskedAccountNumber: masked } : { key: choice, maskedGstin: masked };
+      });
+      await this.sessions.save(key, { ...state, [attemptKey]: { ...attempt, choices } });
+      return { accounts: safe };
+    });
+  }
+
+  async attachFinancialVoltcred(
+    purpose: FinancialPurpose,
+    scope: VoltcredBankScope,
+    input: unknown,
+    id: string | undefined
+  ) {
+    const key = this.sessions.key(scope, id);
+    if (!key) return rejectApplicant(401);
+    if (
+      !exactHttpsOrigin(scope.bankConsentOrigin) ||
+      !object(input) ||
+      Object.keys(input).length !== 1 ||
+      typeof input.key !== 'string' ||
+      !/^[A-Za-z0-9_-]{43}$/.test(input.key)
+    )
+      return rejectApplicant(400);
+    const choice = input.key;
+    return this.sessions.withLock(key, async () => {
+      const attemptKey = purpose === 'bank' ? 'bankAa' : 'gstAa';
+      const state = await this.sessions.get(key);
+      if (!state) return rejectApplicant(401);
+      const draft = await this.financialDraft(scope, state, purpose);
+      const attempt = state[attemptKey];
+      const ref = attempt?.choices?.[choice];
+      if (!ref || !attempt?.requestId) return rejectApplicant(409);
+      const accounts = this.financialAccounts(
+        await this.financialAction(scope, purpose, state[attemptKey], draft, 'options'),
+        purpose
+      );
+      if (!accounts.some((account) => account.ref === ref)) return rejectApplicant(409);
+      const response = await this.fetcher(
+        `${publicActorScope(scope).destinyOrigin}/v1/channel-partners/intakes/${draft.id}/financial-data`,
+        {
+          method: 'POST',
+          redirect: 'error',
+          cache: 'no-store',
+          signal: AbortSignal.timeout(45000),
+          headers: { 'Content-Type': 'application/json', ...draft.headers },
+          body: JSON.stringify({
+            input: { version: draft.version, purpose, request_id: attempt.requestId, linked_account_ref: ref },
+          }),
+        }
+      );
+      if (!response.ok) return rejectApplicant(response.status === 409 ? 409 : 503);
+      const data = await response.json();
+      const result = voltcredDraft(data, scope.organizationId);
+      if (
+        result.id !== draft.id ||
+        !result.stage ||
+        dealerStages.indexOf(result.stage) <= dealerStages.indexOf(purpose) ||
+        result.version <= draft.version
+      )
+        return rejectApplicant(503);
+      await this.sessions.save(key, { ...state, [attemptKey]: undefined });
+      return { draft: result };
+    });
+  }
+
+  async evidenceStatusVoltcred(scope: PublicDealerScope, input: unknown, id: string | undefined) {
+    if (!object(input) || Object.keys(input).length) return rejectApplicant(400);
+    const key = this.sessions.key(scope, id);
+    if (!key) return rejectApplicant(401);
+    return this.sessions.withLock(key, async () => {
+      const state = await this.sessions.get(key);
+      if (!state) return rejectApplicant(401);
+      const { draft, canWrite, data } = await this.readVoltcredDraft(scope, state);
+      if (!canWrite || !isVoltcredEvidenceStage(draft.stage)) return rejectApplicant(409);
+      return projectVoltcredEvidence(draft.stage, data);
+    });
+  }
+
+  async executionVn(
+    scope: VnDealerScope & { ownerHmacKey?: string; kycOrigin?: string },
+    input: unknown,
+    id: string | undefined
+  ) {
+    if (
+      !object(input) ||
+      (input.action !== 'STATUS' && input.action !== 'SAVE_EXECUTION') ||
+      Object.keys(input).length !== (input.action === 'STATUS' ? 1 : scope.admission ? 3 : 2) ||
+      (scope.admission &&
+        input.action === 'SAVE_EXECUTION' &&
+        (!Number.isSafeInteger(input.version) || (input.version as number) < 1))
+    )
+      return rejectApplicant(400);
+    const action = input.action;
+    const names = [
+      'legal_name',
+      'registered_address',
+      'additional_address',
+      'signatory_name',
+      'signatory_designation',
+      'bank_account_holder',
+      'bank_name',
+      'bank_account_number',
+      'confirm_account_number',
+      'bank_ifsc',
+      'approved_outlets',
+    ];
+    if (action === 'SAVE_EXECUTION') {
+      if (!object(input.fields)) return rejectApplicant(400);
+      const fields = input.fields;
+      const keys = Object.keys(fields);
+      const allowed = [...names, ...(keys.includes('registration_details') ? ['registration_details'] : [])];
+      if (
+        keys.length !== allowed.length ||
+        !allowed.every(
+          (k) => Object.hasOwn(fields, k) && typeof fields[k] === 'string' && (fields[k] as string).length <= 2000
+        )
+      )
+        return rejectApplicant(400);
+    }
+    const key = this.sessions.key(scope, id);
+    if (!key) return rejectApplicant(401);
+    return this.sessions.withLock(key, async () => {
+      const state = await this.sessions.get(key);
+      if (!state || !state.referral || !state.vnActor) return rejectApplicant(401);
+      if (scope.admission) {
+        if (
+          scope.admission.issuerOrgId !== scope.organizationId ||
+          scope.vn.actorOrganizationId !== scope.organizationId ||
+          Buffer.byteLength(scope.admission.hmacSecret) < 32
+        )
+          return rejectApplicant(503);
+        if (!state.publicVn || !verifiedPublicActor(scope, state)) return rejectApplicant(401);
+        const draftId = state.vnAdmissionDraftId;
+        if (!draftId || !uuidPattern.test(draftId)) return rejectApplicant(409);
+        const snapshot = await this.admitVn(scope, state, scope.admission.hmacSecret, {
+          action: 'resume',
+          draft_id: draftId,
+        });
+        if (
+          !object(snapshot) ||
+          snapshot.draft_id !== draftId ||
+          !Number.isSafeInteger(snapshot.version) ||
+          (snapshot.version as number) < 1 ||
+          snapshot.status !== 'in_progress' ||
+          snapshot.intake_stage !== 'additional_documents' ||
+          (action === 'SAVE_EXECUTION' && input.version !== snapshot.version)
+        )
+          return rejectApplicant(409);
+        const version = snapshot.version as number;
+        const send = async (operation: 'STATUS' | 'SAVE') => {
+          const result = await this.admitVn(scope, state, scope.admission!.hmacSecret, {
+            action: 'execution',
+            draft_id: draftId,
+            operation,
+            version,
+            ...(operation === 'SAVE' && { fields: input.fields }),
+          });
+          if (
+            !object(result) ||
+            !Number.isSafeInteger(result.version) ||
+            (result.version as number) < 1 ||
+            ![null, 'registered_entity', 'registration_details'].includes(result.execution as any)
+          )
+            return rejectApplicant(503);
+          return {
+            version: result.version as number,
+            execution: result.execution as null | 'registered_entity' | 'registration_details',
+          };
+        };
+        const current = await send('STATUS');
+        if (current.version !== version) return rejectApplicant(409);
+        if (action === 'STATUS') return current;
+        if (
+          !current.execution ||
+          !object(input.fields) ||
+          Object.hasOwn(input.fields, 'registration_details') !== (current.execution === 'registration_details')
+        )
+          return rejectApplicant(409);
+        const saved = await send('SAVE');
+        if (saved.version <= version || saved.execution !== null) return rejectApplicant(503);
+        return saved;
+      }
+      if (!scope.ownerHmacKey || !scope.kycOrigin) return rejectApplicant(503);
+      const ownerScope = scope as VnDealerScope & { ownerHmacKey: string; kycOrigin: string };
+      const { draft, canWrite } = await this.readVoltcredDraft(scope, state);
+      if (!canWrite || draft.stage !== 'additional_documents') return rejectApplicant(409);
+      const project = (data: unknown) => {
+        if (
+          !object(data) ||
+          typeof data.version !== 'number' ||
+          !Number.isSafeInteger(data.version) ||
+          data.version < 1 ||
+          !(
+            data.execution === null ||
+            data.execution === 'registered_entity' ||
+            data.execution === 'registration_details'
+          ) ||
+          !['pending', 'saved', 'unavailable'].includes(data.execution_readiness as string) ||
+          (data.execution_readiness === 'pending') !== (data.execution !== null)
+        )
+          return rejectApplicant(503);
+        return { version: data.version, execution: data.execution, execution_readiness: data.execution_readiness };
+      };
+      const current = project(
+        await this.publicOwnerRequest(ownerScope, state, 'referral-dossier', { action: 'STATUS' })
+      );
+      if (current.version !== draft.version) return rejectApplicant(409);
+      if (action === 'STATUS')
+        return { execution: current.execution, execution_readiness: current.execution_readiness };
+      if (
+        current.execution_readiness !== 'pending' ||
+        !current.execution ||
+        !object(input.fields) ||
+        Object.hasOwn(input.fields, 'registration_details') !== (current.execution === 'registration_details')
+      )
+        return rejectApplicant(409);
+      const saved = project(
+        await this.publicOwnerRequest(ownerScope, state, 'referral-dossier', {
+          action,
+          version: current.version,
+          fields: input.fields,
+        })
+      );
+      if (saved.version <= current.version || saved.execution_readiness !== 'saved') return rejectApplicant(503);
+      return { execution: saved.execution, execution_readiness: saved.execution_readiness };
+    });
+  }
+
+  async reviewVoltcred(scope: PublicDealerScope, input: unknown, id: string | undefined) {
+    if (
+      !object(input) ||
+      Object.keys(input).length !== 1 ||
+      (input.action !== 'STATUS' && input.action !== 'PREPARE' && input.action !== 'SUBMIT')
+    )
+      return rejectApplicant(400);
+    const action = input.action;
+    const key = this.sessions.key(scope, id);
+    if (!key) return rejectApplicant(401);
+    return this.sessions.withLock(key, async () => {
+      const state = await this.sessions.get(key);
+      if (!state || !state.referral) return rejectApplicant(401);
+      if ('vn' in scope) {
+        if (
+          !scope.admission ||
+          scope.admission.issuerOrgId !== scope.organizationId ||
+          scope.vn.actorOrganizationId !== scope.organizationId ||
+          Buffer.byteLength(scope.admission.hmacSecret) < 32
+        )
+          return rejectApplicant(503);
+        if (!state.publicVn || !verifiedPublicActor(scope, state)) return rejectApplicant(401);
+        const draftId = state.vnAdmissionDraftId;
+        if (!draftId || !uuidPattern.test(draftId)) return rejectApplicant(409);
+        const snapshot = await this.admitVn(scope, state, scope.admission.hmacSecret, {
+          action: 'resume',
+          draft_id: draftId,
+        });
+        if (
+          !object(snapshot) ||
+          snapshot.draft_id !== draftId ||
+          !Number.isSafeInteger(snapshot.version) ||
+          (snapshot.version as number) < 1 ||
+          !['in_progress', 'changes_requested', 'submitted'].includes(snapshot.status as string) ||
+          !['additional_documents', 'review'].includes(snapshot.intake_stage as string)
+        )
+          return rejectApplicant(409);
+        if (
+          action !== 'STATUS' &&
+          (snapshot.intake_stage !== 'additional_documents' || snapshot.status === 'submitted')
+        )
+          return rejectApplicant(409);
+        const send = async (operation: typeof action, version: number) => {
+          const result = await this.admitVn(scope, state, scope.admission!.hmacSecret, {
+            action: 'completion',
+            draft_id: draftId,
+            operation,
+            version,
+          });
+          const allowed: Record<string, string | null> = {
+            evidence_ready: 'PREPARE',
+            ready_to_submit: 'SUBMIT',
+            submitted: null,
+            evidence_required: null,
+            bank_details_required: null,
+            bank_verification_required: null,
+            agreement_ready: null,
+            signing_pending: null,
+            review_pending: null,
+            closed: null,
+            agreement_unavailable: null,
+          };
+          if (
+            !object(result) ||
+            typeof result.stage !== 'string' ||
+            !Object.hasOwn(allowed, result.stage) ||
+            !Number.isSafeInteger(result.version) ||
+            (result.version as number) < version ||
+            !Array.isArray(result.actions) ||
+            result.actions.length !== (allowed[result.stage] ? 1 : 0) ||
+            (allowed[result.stage] && result.actions[0] !== allowed[result.stage])
+          )
+            return rejectApplicant(503);
+          return { stage: result.stage, version: result.version as number, action: allowed[result.stage] };
+        };
+        const current = await send('STATUS', snapshot.version as number);
+        if (current.version !== snapshot.version || (snapshot.intake_stage === 'review' && current.action !== null))
+          return rejectApplicant(409);
+        if (action === 'STATUS') return { stage: current.stage, action: current.action };
+        if (current.action !== action) return rejectApplicant(409);
+        const result = await send(action, current.version);
+        if (result.version <= current.version) return rejectApplicant(503);
+        return { stage: result.stage, action: result.action };
+      }
+      const { draft, canWrite, headers } = await this.readVoltcredDraft(scope, state);
+      if (!canWrite || draft.stage !== 'additional_documents') return rejectApplicant(409);
+      const send = async (operation: typeof action, version?: number) => {
+        const response = await this.fetcher(
+          `${publicActorScope(scope).destinyOrigin}/v1/channel-partners/intakes/${draft.id}/referral-completion`,
+          {
+            method: 'POST',
+            redirect: 'error',
+            cache: 'no-store',
+            signal: AbortSignal.timeout(operation === 'STATUS' ? 20000 : 30000),
+            headers: { ...headers, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              input: { action: operation, referral_token: state.referral, ...(version !== undefined && { version }) },
+            }),
+          }
+        );
+        if (!response.ok) return rejectApplicant([409, 422].includes(response.status) ? 409 : 503);
+        const result = await response.json();
+        const allowed: Record<string, string | null> = {
+          evidence_ready: 'PREPARE',
+          ready_to_submit: 'SUBMIT',
+          submitted: null,
+          evidence_required: null,
+          bank_details_required: null,
+          review_pending: null,
+          closed: null,
+          agreement_unavailable: null,
+        };
+        if (
+          !object(result) ||
+          typeof result.stage !== 'string' ||
+          !Object.hasOwn(allowed, result.stage) ||
+          typeof result.version !== 'number' ||
+          !Number.isSafeInteger(result.version) ||
+          result.version < draft.version ||
+          !Array.isArray(result.actions) ||
+          result.actions.length !== (allowed[result.stage] ? 1 : 0) ||
+          (allowed[result.stage] && result.actions[0] !== allowed[result.stage])
+        )
+          return rejectApplicant(503);
+        return { stage: result.stage, version: result.version, action: allowed[result.stage] };
+      };
+      const current = await send('STATUS');
+      if (current.version !== draft.version) return rejectApplicant(409);
+      if (action === 'STATUS') return { stage: current.stage, action: current.action };
+      if (current.action !== action) return rejectApplicant(409);
+      const result = await send(action, current.version);
+      return { stage: result.stage, action: result.action };
+    });
+  }
+
+  async agreementVoltcred(
+    scope: (PublicOwnerScope & { signingOrigin?: string }) | VnDealerScope,
+    input: unknown,
+    id: string | undefined
+  ) {
+    if (
+      !object(input) ||
+      Object.keys(input).length !== 1 ||
+      typeof input.action !== 'string' ||
+      !['STATUS', 'VERIFY_BANK', 'FREEZE', 'REFRESH', 'SIGN'].includes(input.action)
+    )
+      return rejectApplicant(400);
+    const action = input.action;
+    const key = this.sessions.key(scope, id);
+    if (!key) return rejectApplicant(401);
+    return this.sessions.withLock(key, async () => {
+      const state = await this.sessions.get(key);
+      if (!state || !state.referral) return rejectApplicant(401);
+      if ('vn' in scope && scope.admission) {
+        if (action !== 'STATUS') return rejectApplicant(409);
+        if (
+          scope.admission.issuerOrgId !== scope.organizationId ||
+          scope.vn.actorOrganizationId !== scope.organizationId ||
+          Buffer.byteLength(scope.admission.hmacSecret) < 32
+        )
+          return rejectApplicant(503);
+        if (!state.publicVn || !verifiedPublicActor(scope, state)) return rejectApplicant(401);
+        const draftId = state.vnAdmissionDraftId;
+        if (!draftId || !uuidPattern.test(draftId)) return rejectApplicant(409);
+        const snapshot = await this.admitVn(scope, state, scope.admission.hmacSecret, {
+          action: 'resume',
+          draft_id: draftId,
+        });
+        if (
+          !object(snapshot) ||
+          snapshot.draft_id !== draftId ||
+          !Number.isSafeInteger(snapshot.version) ||
+          (snapshot.version as number) < 1 ||
+          snapshot.status !== 'submitted' ||
+          snapshot.intake_stage !== 'agreement'
+        )
+          return rejectApplicant(409);
+        const result = await this.admitVn(scope, state, scope.admission.hmacSecret, {
+          action: 'completion',
+          draft_id: draftId,
+          operation: 'STATUS',
+          version: snapshot.version,
+        });
+        if (
+          !object(result) ||
+          Object.keys(result).length !== 3 ||
+          !['agreement_pending', 'review_pending', 'agreement_unavailable'].includes(result.stage as string) ||
+          result.version !== snapshot.version ||
+          !Array.isArray(result.actions) ||
+          result.actions.length !== 0
+        )
+          return rejectApplicant(503);
+        return { stage: result.stage, action: null, canSign: false, signed: false };
+      }
+      if (!('ownerHmacKey' in scope)) return rejectApplicant(503);
+      const { draft, canWrite, headers, data } = await this.readVoltcredDraft(scope, state);
+      if (draft.stage === 'completed' && action === 'STATUS')
+        return { stage: 'completed', action: null, canSign: false, signed: true };
+      if (!canWrite || draft.stage !== 'agreement') return rejectApplicant(409);
+      const signable =
+        ['prepared', 'requesting', 'requested'].includes(data.agreement?.status) &&
+        exactHttpsOrigin(scope.signingOrigin);
+      const send = async (operation: string, version?: number) => {
+        const response = await this.fetcher(
+          `${publicActorScope(scope).destinyOrigin}/v1/channel-partners/intakes/${draft.id}/referral-completion`,
+          {
+            method: 'POST',
+            redirect: 'error',
+            cache: 'no-store',
+            signal: AbortSignal.timeout(operation === 'STATUS' ? 20000 : 30000),
+            headers: { ...headers, 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              input: { action: operation, referral_token: state.referral, ...(version !== undefined && { version }) },
+            }),
+          }
+        );
+        if (!response.ok) return rejectApplicant([409, 422].includes(response.status) ? 409 : 503);
+        const result = await response.json();
+        const allowed: Record<string, string | null> = {
+          bank_details_required: null,
+          bank_verification_required: 'VERIFY_BANK',
+          agreement_ready: 'FREEZE',
+          signing_pending: 'REFRESH',
+          ready_to_submit: null,
+          submitted: null,
+          evidence_required: null,
+          review_pending: null,
+          closed: null,
+          agreement_unavailable: null,
+        };
+        if (
+          !object(result) ||
+          typeof result.stage !== 'string' ||
+          !Object.hasOwn(allowed, result.stage) ||
+          typeof result.version !== 'number' ||
+          !Number.isSafeInteger(result.version) ||
+          result.version < draft.version ||
+          !Array.isArray(result.actions) ||
+          result.actions.length !== (allowed[result.stage] ? 1 : 0) ||
+          (allowed[result.stage] && result.actions[0] !== allowed[result.stage])
+        )
+          return rejectApplicant(503);
+        return { stage: result.stage, version: result.version, action: allowed[result.stage] };
+      };
+      const current = await send('STATUS');
+      if (current.version !== draft.version) return rejectApplicant(409);
+      if (action === 'SIGN') {
+        if (!signable || current.stage !== 'signing_pending') return rejectApplicant(409);
+        const result = await this.publicOwnerRequest(scope, state, 'agreement/own-sign', { version: current.version });
+        if (!object(result) || result.status !== 'requested') return rejectApplicant(503);
+        return { status: 'requested', url: dealerProviderRedirect(result.url, scope.signingOrigin) };
+      }
+      if (action === 'STATUS')
+        return {
+          stage: current.stage,
+          action: current.action,
+          canSign: Boolean(signable && current.stage === 'signing_pending'),
+          signed: data.agreement?.status === 'completed',
+        };
+      if (current.action !== action) return rejectApplicant(409);
+      const result = await send(action, current.version);
+      const updated = await this.readVoltcredDraft(scope, state);
+      if (updated.draft.stage === 'completed')
+        return { stage: 'completed', action: null, canSign: false, signed: true };
+      if (updated.draft.stage !== 'agreement' || !updated.canWrite || updated.draft.version !== result.version)
+        return rejectApplicant(409);
+      const status = updated.data.agreement?.status;
+      return {
+        stage: result.stage,
+        action: result.action,
+        canSign: Boolean(
+          result.stage === 'signing_pending' &&
+          ['prepared', 'requesting', 'requested'].includes(status) &&
+          exactHttpsOrigin(scope.signingOrigin)
+        ),
+        signed: status === 'completed',
+      };
+    });
+  }
+
+  private async publicOwnerRequest(scope: PublicOwnerScope, state: State, suffix: string, input: Payload) {
+    const actor = verifiedPublicActor(scope, state);
+    if (!actor || !state.draftId) return rejectApplicant(401);
+    const path = `/v1/channel-partners/intakes/${state.draftId}/email-owner/${suffix}`;
+    const issuedAt = String(Math.floor(Date.now() / 1000));
+    const email = actor.email.trim().toLowerCase();
+    const signature = createHmac('sha256', scope.ownerHmacKey)
+      .update(
+        JSON.stringify([
+          'destiny-owner-email-v1',
+          'POST',
+          path,
+          scope.organizationId,
+          actor.userId,
+          state.draftId,
+          email,
+          issuedAt,
+        ]),
+        'utf8'
+      )
+      .digest('hex');
+    const response = await this.fetcher(`${publicActorScope(scope).destinyOrigin}${path}`, {
+      method: 'POST',
+      redirect: 'error',
+      cache: 'no-store',
+      signal: AbortSignal.timeout(input.action === 'STATUS' || suffix === 'kyc/status' ? 10000 : 25000),
+      headers: {
+        'Content-Type': 'application/json',
+        'x-gct-org-id': scope.organizationId,
+        'x-gct-user-id': actor.userId,
+        'x-gct-owner-email': email,
+        'x-gct-owner-issued-at': issuedAt,
+        'x-gct-owner-signature': signature,
+      },
+      body: JSON.stringify({ input: { ...input, referral_token: state.referral } }),
+    });
+    if (!response.ok) return rejectApplicant([409, 422].includes(response.status) ? response.status : 503);
+    return response.json();
+  }
+
+  private async publicOwnerCurrent(
+    scope: PublicOwnerScope,
+    state: State,
+    snapshot?: Awaited<ReturnType<DealerOnboarding['readVoltcredDraft']>>
+  ) {
+    const { draft, canWrite } = snapshot ?? (await this.readVoltcredDraft(scope, state));
+    if (draft.stage !== 'people' || !canWrite) return rejectApplicant(409);
+    const [dossier, kyc] = await Promise.all([
+      this.publicOwnerRequest(scope, state, 'referral-dossier', { action: 'STATUS' }),
+      this.publicOwnerRequest(scope, state, 'kyc/status', {}),
+    ]);
+    if (
+      !object(dossier) ||
+      typeof dossier.version !== 'number' ||
+      !Number.isSafeInteger(dossier.version) ||
+      dossier.version < 1 ||
+      !(dossier.own_din === null || dossier.own_din === 'DIN' || dossier.own_din === 'DPIN') ||
+      !object(kyc) ||
+      typeof kyc.person_id !== 'string' ||
+      !/^(?:[1-9]\d{0,18}|person[a-zA-Z0-9_-]{1,40})$/.test(kyc.person_id) ||
+      typeof kyc.status !== 'string' ||
+      !ownerKycStatuses.includes(kyc.status) ||
+      typeof kyc.version !== 'number' ||
+      !Number.isSafeInteger(kyc.version) ||
+      kyc.version < 1 ||
+      !Array.isArray(kyc.actions) ||
+      new Set(kyc.actions).size !== kyc.actions.length ||
+      !kyc.actions.every((a: unknown) => typeof a === 'string' && ['START', 'SYNC', 'SELFIE'].includes(a))
+    )
+      return rejectApplicant(503);
+    if (kyc.version !== draft.version || dossier.version !== draft.version) return rejectApplicant(409);
+    const needsDin = dossier.own_din !== null;
+    return {
+      personId: kyc.person_id,
+      version: draft.version,
+      status: kyc.status,
+      actions: [...kyc.actions, ...(needsDin ? ['SAVE_DIN'] : [])] as string[],
+      needsDin,
+    };
+  }
+
+  private publicOwnerView(current: Awaited<ReturnType<DealerOnboarding['publicOwnerCurrent']>>) {
+    return { status: current.status, actions: current.actions, needsDin: current.needsDin };
+  }
+
+  private async publicOwnerAfter(scope: PublicOwnerScope, state: State) {
+    const snapshot = await this.readVoltcredDraft(scope, state);
+    if (isVoltcredEvidenceStage(snapshot.draft.stage)) {
+      return { status: 'verified', actions: [], needsDin: false };
+    }
+    return this.publicOwnerView(await this.publicOwnerCurrent(scope, state, snapshot));
+  }
+
+  async publicOwnerVoltcred(scope: PublicOwnerScope, input: unknown, id: string | undefined) {
+    if (
+      !object(input) ||
+      typeof input.action !== 'string' ||
+      !['STATUS', 'START', 'SYNC', 'SAVE_DIN'].includes(input.action) ||
+      (input.action === 'SAVE_DIN'
+        ? Object.keys(input).length !== 2 || typeof input.din !== 'string' || !/^\d{8}$/.test(input.din)
+        : Object.keys(input).length !== 1)
+    )
+      return rejectApplicant(400);
+    const key = this.sessions.key(scope, id);
+    if (!key) return rejectApplicant(401);
+    return this.sessions.withLock(key, async () => {
+      const state = await this.sessions.get(key);
+      if (!state) return rejectApplicant(401);
+      const current = await this.publicOwnerCurrent(scope, state);
+      if (input.action === 'STATUS') return this.publicOwnerView(current);
+      if (!current.actions.includes(input.action as string)) return rejectApplicant(409);
+      let redirectUrl: string | undefined;
+      if (input.action === 'SAVE_DIN') {
+        await this.publicOwnerRequest(scope, state, 'referral-dossier', {
+          action: 'SAVE_OWN_DIN',
+          version: current.version,
+          fields: { din: input.din },
+        });
+      } else {
+        const restart = input.action === 'START' && ['failed', 'cancelled'].includes(current.status);
+        const result = await this.publicOwnerRequest(
+          scope,
+          state,
+          `people/${current.personId}/kyc/${String(input.action).toLowerCase()}`,
+          {
+            version: current.version,
+            ...(restart && { restart }),
+          }
+        );
+        if (!object(result) || typeof result.status !== 'string' || !ownerKycStatuses.includes(result.status))
+          return rejectApplicant(503);
+        if (input.action === 'START' && result.gateway_url != null)
+          redirectUrl = dealerProviderRedirect(result.gateway_url, scope.kycOrigin);
+      }
+      return { ...(await this.publicOwnerAfter(scope, state)), ...(redirectUrl && { redirectUrl }) };
+    });
+  }
+
+  async publicOwnerSelfieVoltcred(scope: PublicOwnerScope, read: () => Promise<Buffer>, id: string | undefined) {
+    const key = this.sessions.key(scope, id);
+    if (!key) return rejectApplicant(401);
+    return this.sessions.withLock(key, async () => {
+      const state = await this.sessions.get(key);
+      if (!state) return rejectApplicant(401);
+      const current = await this.publicOwnerCurrent(scope, state);
+      if (current.status !== 'verified' || !current.actions.includes('SELFIE')) return rejectApplicant(409);
+      await this.sessions.rate(scope, 'public-owner-selfie', verifiedPublicActor(scope, state)!.userId, 5, 60);
+      const result = await this.publicOwnerRequest(scope, state, `people/${current.personId}/kyc/selfie`, {
+        version: current.version,
+        selfie: dealerSelfieData(await read()),
+      });
+      if (!object(result) || result.selfie_verified !== true) return rejectApplicant(503);
+      return this.publicOwnerAfter(scope, state);
+    });
+  }
+
+  async peopleStatusVoltcred(scope: PublicDealerScope, input: unknown, id: string | undefined) {
+    if (!object(input) || Object.keys(input).length) return rejectApplicant(400);
+    const key = this.sessions.key(scope, id);
+    if (!key) return rejectApplicant(401);
+    return this.sessions.withLock(key, async () => {
+      const state = await this.sessions.get(key);
+      if (!state) return rejectApplicant(401);
+      const { draft, canWrite, pan, data } = await this.readVoltcredDraft(scope, state);
+      if (draft.stage !== 'people' || !canWrite) return rejectApplicant(409);
+      const dossier = data.dossier;
+      if (
+        !object(dossier) ||
+        !object(dossier.details) ||
+        !Array.isArray(dossier.people) ||
+        dossier.people.length > 30 ||
+        !object(dossier.kyc)
+      )
+        return rejectApplicant(503);
+      const kycByPerson = dossier.kyc;
+      const needsDin = pan[3] === 'C' || (pan[3] === 'F' && dossier.details.firm_type === 'llp');
+      const people = dossier.people.map((person: unknown) => {
+        if (
+          !object(person) ||
+          typeof person.id !== 'string' ||
+          !/^(?:[1-9]\d{0,18}|person[a-zA-Z0-9_-]{1,40})$/.test(person.id)
+        )
+          return rejectApplicant(503);
+        const kyc = Object.hasOwn(kycByPerson, person.id) ? kycByPerson[person.id] : undefined;
+        if (
+          person.name === '' &&
+          Object.entries(person).every(([key, value]) => key === 'id' || value == null || value === '')
+        )
+          return {
+            name: 'Pending invitation',
+            role: 'Participant',
+            needs_din: needsDin,
+            kyc_complete: false,
+            selfie_complete: false,
+          };
+        if (
+          typeof person.name !== 'string' ||
+          person.name.length > 255 ||
+          (person.role != null && (typeof person.role !== 'string' || person.role.length > 255))
+        )
+          return rejectApplicant(503);
+        return {
+          name: person.name.trim() || 'Name pending',
+          role: (typeof person.role === 'string' && person.role.trim()) || 'Role pending',
+          needs_din: needsDin,
+          kyc_complete: object(kyc) && kyc.status === 'verified',
+          selfie_complete: object(kyc) && kyc.selfie_verified === true,
+        };
+      });
+      return { people };
+    });
+  }
+
+  async uploadVoltcredEvidence(scope: PublicDealerScope, read: () => Promise<unknown>, id: string | undefined) {
+    const key = this.sessions.key(scope, id);
+    if (!key || !id) return rejectApplicant(401);
+    const session = await this.sessions.get(key);
+    if (!session?.draftId || !verifiedPublicActor(scope, session)) return rejectApplicant(401);
+    await this.sessions.rate(scope, 'upload', id, 20, 120);
+    const input = await read();
+    if (
+      !object(input) ||
+      Object.keys(input).some((name) => !['code', 'file', 'location'].includes(name)) ||
+      typeof input.code !== 'string' ||
+      !/^[a-z_]{1,64}$/.test(input.code) ||
+      !Buffer.isBuffer(input.file) ||
+      !input.file.length ||
+      input.file.length > maxDealerDocumentBytes
+    )
+      return rejectApplicant(400);
+    const { code, file, location } = input;
+    return this.sessions.withLock(key, async () => {
+      const state = await this.sessions.get(key);
+      if (!state) return rejectApplicant(401);
+      const { draft, canWrite, headers, data } = await this.readVoltcredDraft(scope, state);
+      if (!canWrite || !isVoltcredEvidenceStage(draft.stage)) return rejectApplicant(409);
+      const evidence = projectVoltcredEvidence(draft.stage, data);
+      const offered = evidence.document_actions.find((action) => action.code === code);
+      if (!offered || offered.count >= (offered.code === 'additional_documents' ? 24 : 1)) return rejectApplicant(409);
+      const valid =
+        offered.mode === 'camera'
+          ? validCameraLocation(location) && validDocument('photo', file, undefined)
+          : validDocument('file', file, location);
+      if (!valid) return rejectApplicant(400);
+
+      const body = new FormData();
+      body.append('metadata', JSON.stringify({ version: draft.version, ...(location !== undefined && { location }) }));
+      body.append('file', new Blob([new Uint8Array(file)]), 'evidence');
+      const response = await this.fetcher(
+        `${publicActorScope(scope).destinyOrigin}/v1/channel-partners/intakes/${draft.id}/documents/${offered.code}`,
+        {
+          method: 'POST',
+          redirect: 'error',
+          cache: 'no-store',
+          signal: AbortSignal.timeout(35000),
+          headers,
+          body,
+        }
+      );
+      if (!response.ok) return rejectApplicant([409, 422].includes(response.status) ? 409 : 503);
+      const receipt = await response.json();
+      const fileId =
+        typeof receipt?.file_id === 'number' && Number.isSafeInteger(receipt.file_id)
+          ? String(receipt.file_id)
+          : receipt?.file_id;
+      if (
+        typeof fileId !== 'string' ||
+        !/^[1-9]\d{0,18}$/.test(fileId) ||
+        !Number.isSafeInteger(receipt?.version) ||
+        receipt.version < draft.version
+      )
+        return rejectApplicant(503);
+      const current = await this.readVoltcredDraft(scope, state);
+      if (current.draft.version < receipt.version) return rejectApplicant(503);
+      return { state: 'resume' as const, draft: current.draft };
+    });
+  }
+
+  async statusVoltcred(scope: PublicDealerScope, input: unknown, id: string | undefined) {
+    if (!object(input) || Object.keys(input).length) return rejectApplicant(400);
+    const key = this.sessions.key(scope, id);
+    const state = key ? await this.sessions.get(key) : null;
+    if (!state || !verifiedPublicActor(scope, state)) return { state: 'invite' as const };
+    if (!state.draftId || !key) return { state: 'pan' as const };
+    return this.sessions.withLock(key, async () => {
+      const current = await this.sessions.get(key);
+      if (!current) return rejectApplicant(401);
+      const { draft, canWrite } = await this.readVoltcredDraft(scope, current);
+      const stageIndex = draft.stage ? dealerStages.indexOf(draft.stage) : -1;
+      const bankAa = stageIndex > dealerStages.indexOf('bank') ? undefined : current.bankAa;
+      const gstAa = stageIndex > dealerStages.indexOf('gst') ? undefined : current.gstAa;
+      if (bankAa !== current.bankAa || gstAa !== current.gstAa)
+        await this.sessions.save(key, { ...current, bankAa, gstAa });
+      return { state: 'resume' as const, draft: { ...draft, ...(draft.stage === 'agreement' && { canWrite }) } };
+    });
   }
 
   private async lookup(scope: ApplicantScope, state: State, key: string, pan: string) {
@@ -660,6 +2916,7 @@ export class DealerOnboarding {
     return this.sessions.withLock(key, async () => {
       const state = await this.sessions.get(key);
       if (!state) return rejectApplicant(409);
+      if (state.publicVoltcred || state.publicVn) return rejectApplicant(409);
       if (command.kind === 'entry' && command.referral && command.referral !== state.referral)
         return rejectApplicant(409);
       if (command.kind === 'entry' || command.kind === 'status') return this.status(scope, state, key);
