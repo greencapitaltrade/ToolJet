@@ -1,4 +1,3 @@
-import './handoff-bootstrap';
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 
@@ -12,7 +11,14 @@ import i18n from 'i18next';
 import { initReactI18next } from 'react-i18next';
 import Backend from 'i18next-http-backend';
 import config from 'config';
-import { captureSignerHandoff, getSignerHandoff, clearSignerHandoff } from './SignerHandoff/bootstrap';
+import { captureMcpOAuthBootstrap } from './McpOAuth/bootstrap';
+import { captureToolJetReferral } from './Referral/bootstrap';
+
+// OAuth bootstrap fragments are credentials. Remove them before config,
+// analytics, error reporting, or the router can capture the page URL.
+captureToolJetReferral(window);
+captureMcpOAuthBootstrap();
+
 // When on a custom domain, use relative API path so requests go through the
 // Cloudflare Worker proxy, making cookies first-party (fixes incognito sign-in).
 // Compare hostnames (not origins) so local dev with different ports is unaffected.

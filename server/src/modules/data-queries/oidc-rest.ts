@@ -10,6 +10,7 @@ import { ForbiddenException } from '@nestjs/common';
 import { QueryError } from '@tooljet/plugins';
 import { FeatureAbilityFactory as DataSourceFeatureAbilityFactory } from './ability/data-source';
 import { FEATURE_KEY } from './constants';
+import { dealerViewerHeaders } from './dealer-viewer';
 
 export const OIDC_REST_SOURCES_ENV = 'TOOLJET_OIDC_REST_SOURCES';
 export const OIDC_THOR_ORIGIN_ENV = 'TOOLJET_OIDC_THOR_ORIGIN';
@@ -99,29 +100,30 @@ export async function prepareOidcRestQuery(
   parsed: RestOptions,
   source: RestOptions,
   user: OidcActorUser | undefined,
-  sessions?: SessionUtilService
+  sessions?: SessionUtilService,
+  viewerActor?: { userId: string; organizationId: string }
 ): Promise<{ sourceOptions: RestOptions; queryOptions: RestOptions }> {
   const settings = getConfiguredOidcSettings();
   const thorOrigin = privateServiceOrigin(process.env[OIDC_THOR_ORIGIN_ENV]);
-  if (!settings || !thorOrigin || !sessions || privateServiceOrigin(source.url) !== origin) {
+  if ((!viewerActor && (!settings || !thorOrigin || !sessions)) || privateServiceOrigin(source.url) !== origin) {
     throw configuredSourceError();
   }
 
   if (!restMethods.has(saved.method) || parsed.method !== saved.method || !matchesSavedPath(saved.url, parsed.url)) {
     throw new QueryError('Invalid REST query path or method.', '', { status: 400 });
   }
-  if (!user) throw new QueryError('Sign in to use this connection.', '', { status: 401 });
+  if (!user && !viewerActor) throw new QueryError('Sign in to use this connection.', '', { status: 401 });
   if (source.auth_type === 'oauth' || source.auth_type === 'oauth2') throw configuredSourceError();
 
   try {
-    const { userId, organizationId } = await resolveThorActor(sessions, user, { ...settings, thorOrigin });
+    const { userId, organizationId } = viewerActor ?? await resolveThorActor(sessions, user, { ...settings, thorOrigin });
     return {
       sourceOptions: {
         ...source,
         url: origin,
-        headers: [...forwardedHeaders(source.headers), ['x-gct-user-id', userId], ['x-gct-org-id', organizationId]],
+        headers: [...forwardedHeaders(viewerActor ? dealerViewerHeaders(source.headers) : source.headers), ['x-gct-user-id', userId], ['x-gct-org-id', organizationId]],
       },
-      queryOptions: { ...parsed, headers: forwardedHeaders(parsed.headers) },
+      queryOptions: { ...parsed, headers: forwardedHeaders(viewerActor ? dealerViewerHeaders(parsed.headers) : parsed.headers) },
     };
   } catch (error) {
     if (error instanceof ThorActorError && error.status === 401) {

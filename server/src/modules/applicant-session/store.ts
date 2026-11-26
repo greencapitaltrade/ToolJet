@@ -1,5 +1,7 @@
 import { createHmac, randomBytes } from 'node:crypto';
-import { ApplicantPurpose, ApplicantScope, rejectApplicant } from './fury';
+import { ApplicantPurpose, rejectApplicant } from './fury';
+
+export type ApplicantSessionScope = { origin: string; organizationId: string; lspSecret: string };
 
 const sessionPattern = /^[A-Za-z0-9_-]{43}$/;
 const increment = "local n=redis.call('INCR',KEYS[1]); if n==1 then redis.call('EXPIRE',KEYS[1],ARGV[1]) end; return n";
@@ -7,30 +9,18 @@ const unlock = "if redis.call('GET',KEYS[1])==ARGV[1] then return redis.call('DE
 const rotate =
   "if redis.call('EXISTS',KEYS[1])~=1 or not redis.call('SET',KEYS[2],ARGV[1],'EX',ARGV[2],'NX') then return 0 end; return redis.call('DEL',KEYS[1])";
 
-export type SignedAdmissionScope = {
-  origin: string;
-  organizationId: string;
-  sessionKey: string;
-  namespace: 'signed-admission';
-};
-export type ApplicantSessionScope = ApplicantScope | SignedAdmissionScope;
-
 export type ApplicantRedis = { call(command: string, ...args: string[]): Promise<unknown> };
 export const newApplicantHandle = () => randomBytes(32).toString('base64url');
 
 export class ApplicantSessions<T> {
   constructor(
     private readonly redis: ApplicantRedis,
-    private readonly purpose: ApplicantPurpose
+    private readonly purpose: ApplicantPurpose | 'dealer-viewer'
   ) {}
 
   private scopedKey(scope: ApplicantSessionScope, kind: string, id: string) {
-    const signed = 'namespace' in scope;
-    if (signed && (!/^[1-9][0-9]{0,18}$/.test(scope.organizationId) || !scope.sessionKey)) return rejectApplicant(503);
-    const secret = signed ? scope.sessionKey : scope.lspSecret;
-    const digest = createHmac('sha256', secret).update(scope.origin).update('\0').update(id).digest('hex');
-    const domain = signed ? scope.namespace : 'onboarding';
-    return `${this.purpose}-${domain}:{${scope.organizationId}}:${kind}:${digest}`;
+    const digest = createHmac('sha256', scope.lspSecret).update(scope.origin).update('\0').update(id).digest('hex');
+    return `${this.purpose}-onboarding:{${scope.organizationId}}:${kind}:${digest}`;
   }
 
   key(scope: ApplicantSessionScope, id: string | undefined) {

@@ -1,9 +1,9 @@
 import type { Request, Response } from 'express';
-import { ApplicantPurpose, ApplicantRequestError } from './fury';
+import { ApplicantPurpose, ApplicantRequestError, ApplicantScope } from './fury';
 
 export type ApplicantHttpRequest = Request & { rawBody?: string };
 
-export async function handleApplicantRequest<T extends { origin: string }>(
+export async function handleApplicantRequest<T extends ApplicantScope>(
   req: ApplicantHttpRequest,
   res: Response,
   settings: T | null,
