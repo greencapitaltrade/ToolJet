@@ -2385,12 +2385,18 @@ it('reports only signed delegated agreement status at the current version', asyn
   fixture.fetcher.mockResolvedValueOnce(Response.json({ draft_id: draft.id, version: 1, status: 'in_progress' }));
   await fixture.service.admitVnAction(vn, { pan: 'AAACA1234F', partner_name: 'Dealer' }, fixture.cookie());
   const snapshot = { draft_id: draft.id, version: 4, status: 'submitted', intake_stage: 'agreement' };
-  for (const stage of ['agreement_pending', 'review_pending', 'agreement_unavailable']) {
+  for (const [stage, next] of [
+    ['bank_verification_required', 'VERIFY_BANK'],
+    ['agreement_pending', 'FREEZE'],
+    ['signing_pending', null],
+    ['review_pending', null],
+    ['agreement_unavailable', null],
+  ]) {
     fixture.fetcher
       .mockResolvedValueOnce(Response.json(snapshot))
-      .mockResolvedValueOnce(Response.json({ stage, version: 4, actions: [] }));
+      .mockResolvedValueOnce(Response.json({ stage, version: 4, actions: next ? [next] : [] }));
     await expect(fixture.service.agreementVoltcred(vn as any, { action: 'STATUS' }, fixture.cookie())).resolves.toEqual(
-      { stage, action: null, canSign: false, signed: false }
+      { stage, action: next, canSign: false, signed: false }
     );
     const requests = fixture.fetcher.mock.calls.slice(-2);
     expect(requests.map(([, req]) => JSON.parse(req.body as string).input)).toEqual([
@@ -2414,7 +2420,7 @@ it('reports only signed delegated agreement status at the current version', asyn
         )['x-admission-signature']
       );
   }
-  for (const action of ['SIGN', 'FREEZE', 'REFRESH', 'VERIFY_BANK'])
+  for (const action of ['SIGN', 'REFRESH'])
     await expect(fixture.service.agreementVoltcred(vn as any, { action }, fixture.cookie())).rejects.toMatchObject({
       status: 409,
     });
@@ -2422,13 +2428,47 @@ it('reports only signed delegated agreement status at the current version', asyn
     { stage: 'agreement_pending', version: 4, actions: ['SIGN'] },
     { stage: 'agreement_pending', version: 4, actions: [], url: 'https://evil.test' },
     { stage: 'agreement_pending', version: 5, actions: [] },
-    { stage: 'signing_pending', version: 4, actions: [] },
+    { stage: 'signing_pending', version: 4, actions: ['REFRESH'] },
   ]) {
     fixture.fetcher.mockResolvedValueOnce(Response.json(snapshot)).mockResolvedValueOnce(Response.json(forged));
     await expect(
       fixture.service.agreementVoltcred(vn as any, { action: 'STATUS' }, fixture.cookie())
     ).rejects.toThrow();
   }
+  for (const [action, stage, nextStage] of [
+    ['VERIFY_BANK', 'bank_verification_required', 'agreement_pending'],
+    ['FREEZE', 'agreement_pending', 'signing_pending'],
+  ]) {
+    fixture.fetcher
+      .mockResolvedValueOnce(Response.json(snapshot))
+      .mockResolvedValueOnce(Response.json({ stage, version: 4, actions: [action] }))
+      .mockResolvedValueOnce(
+        Response.json({
+          stage: nextStage,
+          version: action === 'VERIFY_BANK' ? 4 : 5,
+          actions: nextStage === 'agreement_pending' ? ['FREEZE'] : [],
+        })
+      );
+    await expect(fixture.service.agreementVoltcred(vn as any, { action }, fixture.cookie())).resolves.toEqual({
+      stage: nextStage,
+      action: nextStage === 'agreement_pending' ? 'FREEZE' : null,
+      canSign: false,
+      signed: false,
+    });
+    expect(JSON.parse(fixture.fetcher.mock.calls.at(-1)![1].body as string).input).toEqual({
+      referral_token: referralToken,
+      action: 'completion',
+      draft_id: draft.id,
+      operation: action,
+      version: 4,
+    });
+  }
+  fixture.fetcher
+    .mockResolvedValueOnce(Response.json(snapshot))
+    .mockResolvedValueOnce(Response.json({ stage: 'agreement_pending', version: 4, actions: ['FREEZE'] }));
+  await expect(
+    fixture.service.agreementVoltcred(vn as any, { action: 'VERIFY_BANK' }, fixture.cookie())
+  ).rejects.toMatchObject({ status: 409 });
   fixture.fetcher.mockResolvedValueOnce(Response.json({ ...snapshot, intake_stage: 'review' }));
   await expect(fixture.service.agreementVoltcred(vn as any, { action: 'STATUS' }, fixture.cookie())).rejects.toThrow();
 });

@@ -2224,7 +2224,7 @@ export class DealerOnboarding {
       const state = await this.sessions.get(key);
       if (!state || !state.referral) return rejectApplicant(401);
       if ('vn' in scope && scope.admission) {
-        if (action !== 'STATUS') return rejectApplicant(409);
+        if (!['STATUS', 'VERIFY_BANK', 'FREEZE'].includes(action)) return rejectApplicant(409);
         if (
           scope.admission.issuerOrgId !== scope.organizationId ||
           scope.vn.actorOrganizationId !== scope.organizationId ||
@@ -2247,22 +2247,40 @@ export class DealerOnboarding {
           snapshot.intake_stage !== 'agreement'
         )
           return rejectApplicant(409);
-        const result = await this.admitVn(scope, state, scope.admission.hmacSecret, {
-          action: 'completion',
-          draft_id: draftId,
-          operation: 'STATUS',
-          version: snapshot.version,
-        });
-        if (
-          !object(result) ||
-          Object.keys(result).length !== 3 ||
-          !['agreement_pending', 'review_pending', 'agreement_unavailable'].includes(result.stage as string) ||
-          result.version !== snapshot.version ||
-          !Array.isArray(result.actions) ||
-          result.actions.length !== 0
-        )
-          return rejectApplicant(503);
-        return { stage: result.stage, action: null, canSign: false, signed: false };
+        const send = async (operation: string, version: number) => {
+          const result = await this.admitVn(scope, state, scope.admission!.hmacSecret, {
+            action: 'completion',
+            draft_id: draftId,
+            operation,
+            version,
+          });
+          const allowed: Record<string, string | null> = {
+            bank_verification_required: 'VERIFY_BANK',
+            agreement_pending: 'FREEZE',
+            signing_pending: null,
+            review_pending: null,
+            agreement_unavailable: null,
+          };
+          if (
+            !object(result) ||
+            Object.keys(result).length !== 3 ||
+            typeof result.stage !== 'string' ||
+            !Object.hasOwn(allowed, result.stage) ||
+            !Number.isSafeInteger(result.version) ||
+            (result.version as number) < version ||
+            !Array.isArray(result.actions) ||
+            result.actions.length !== (allowed[result.stage] ? 1 : 0) ||
+            (allowed[result.stage] && result.actions[0] !== allowed[result.stage])
+          )
+            return rejectApplicant(503);
+          return { stage: result.stage, version: result.version as number, action: allowed[result.stage] };
+        };
+        const current = await send('STATUS', snapshot.version as number);
+        if (current.version !== snapshot.version) return rejectApplicant(409);
+        if (action === 'STATUS') return { stage: current.stage, action: current.action, canSign: false, signed: false };
+        if (current.action !== action) return rejectApplicant(409);
+        const result = await send(action, current.version);
+        return { stage: result.stage, action: result.action, canSign: false, signed: false };
       }
       if (!('ownerHmacKey' in scope)) return rejectApplicant(503);
       const { draft, canWrite, headers, data } = await this.readVoltcredDraft(scope, state);

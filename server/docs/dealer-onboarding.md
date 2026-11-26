@@ -227,3 +227,9 @@ relay resumes the bound case and sends only the current version with STATUS,
 PREPARE or SUBMIT; Destiny selects the available action. Credit review and
 requested document corrections remain separate states. Agreement, bank and
 identity prerequisites are not bypassed by this continuation.
+
+VN admitted owners may check the agreement and invoke only the currently offered
+`VERIFY_BANK` or `FREEZE` action. Each request resumes the session-bound case
+and checks signed completion status at the same version before an action. The
+response exposes only the stage and action; signing and refresh are unavailable
+in this slice. Bank verification can retain the case version.
