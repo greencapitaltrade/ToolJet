@@ -565,6 +565,31 @@ export class DealerOnboarding {
     }
   }
 
+  private async eligibleVn(scope: VnDealerScope, referral: string) {
+    if (!scope.admission) return this.eligible(scope, referral);
+    if (scope.admission.issuerOrgId !== scope.organizationId) return false;
+    try {
+      const response = await this.fetcher(`${scope.vn.destinyOrigin}/v1/channel-partners/referrals/eligibility`, {
+        method: 'POST',
+        redirect: 'error',
+        cache: 'no-store',
+        signal: AbortSignal.timeout(5000),
+        headers: { 'content-type': 'application/json', 'x-gct-org-id': scope.admission.issuerOrgId },
+        body: JSON.stringify({ referral_token: referral }),
+      });
+      if (!response.ok) return false;
+      const result = await response.json();
+      return (
+        object(result) &&
+        Object.keys(result).length === 2 &&
+        result.organization_id === scope.admission.issuerOrgId &&
+        result.eligible === true
+      );
+    } catch {
+      return false;
+    }
+  }
+
   private async participantEligibility(
     scope: VnDealerScope,
     clientId: string,
@@ -912,7 +937,7 @@ export class DealerOnboarding {
     const referral = input.referral_token;
     await this.sessions.rate(scope, 'entry', scope.origin, 300, 60);
     await this.sessions.rate(scope, 'invite', referral, 100, 60);
-    if (!(await this.eligible(scope, referral))) return rejectApplicant(409);
+    if (!(await this.eligibleVn(scope, referral))) return rejectApplicant(409);
     const guest = await this.sessions.start(
       scope,
       { referral, device: newApplicantHandle(), publicVn: true },
@@ -938,7 +963,7 @@ export class DealerOnboarding {
       if (
         !state?.publicVn ||
         state.vnActor ||
-        (!state.vnParticipant && !state.vnSigner && !(await this.eligible(scope, state.referral)))
+        (!state.vnParticipant && !state.vnSigner && !(await this.eligibleVn(scope, state.referral)))
       )
         return rejectApplicant(409);
       const identity = await broker.callback(input, id);

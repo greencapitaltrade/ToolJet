@@ -194,6 +194,8 @@ function setup(settings = config) {
   let completionStage = 'bank_verification_required';
   let completionUrl = signingUrl;
   const fetcher = jest.fn(async (_url, request) => {
+    if (new URL(_url).pathname === '/v1/channel-partners/referrals/eligibility')
+      return Response.json({ organization_id: '39', eligible: true });
     if (request.body instanceof FormData) return Response.json({ attached: true });
     if (new URL(_url).pathname === `/v1/channel-partners/intakes/${draft.id}`)
       return Response.json({
@@ -2718,4 +2720,58 @@ it('redacts signer invitation URLs and private signer request credentials from t
     'x-signer-eligibility-signature': '[REDACTED]',
     'x-signer-recheck-signature': '[REDACTED]',
   });
+});
+
+it('uses private Destiny eligibility for signed VN owner start and callback', async () => {
+  const fixture = setup();
+  const vn = {
+    ...config!,
+    vn: { actorOrganizationId: '39', destinyOrigin: 'http://destiny' },
+    admission: { issuerOrgId: '39', hmacSecret: 'x'.repeat(32) },
+  };
+  const broker = { start: jest.fn().mockResolvedValue('https://auth.example.test'), callback: jest.fn() };
+  await fixture.service.startVn(vn, broker, { referral_token: referralToken }, fixture.setCookie);
+  const guest = fixture.cookie()!;
+  broker.callback.mockResolvedValue({
+    continuation: guest,
+    userId: '21',
+    organizationId: '39',
+    email: 'dealer@example.test',
+  });
+  await fixture.service.finishVn(vn, broker, { state: 'A'.repeat(43), code: 'code' }, guest, fixture.setCookie);
+  const calls = fixture.fetcher.mock.calls.filter(
+    ([url]) => url === 'http://destiny/v1/channel-partners/referrals/eligibility'
+  );
+  expect(calls).toHaveLength(2);
+  for (const [, request] of calls) {
+    expect(request).toMatchObject({
+      method: 'POST',
+      redirect: 'error',
+      headers: { 'content-type': 'application/json', 'x-gct-org-id': '39' },
+      body: JSON.stringify({ referral_token: referralToken }),
+    });
+    expect(Object.keys(request.headers).sort()).toEqual(['content-type', 'x-gct-org-id']);
+    expect(request.signal).toBeInstanceOf(AbortSignal);
+  }
+  expect(fixture.fetcher.mock.calls.some(([url]) => url === config!.furyUrl)).toBe(false);
+});
+
+it.each([
+  { organization_id: '40', eligible: true },
+  { organization_id: '39', eligible: false },
+  { organization_id: 39, eligible: true },
+  { organization_id: '39', eligible: true, extra: true },
+])('rejects invalid private eligibility %j', async (result) => {
+  const fixture = setup();
+  const vn = {
+    ...config!,
+    vn: { actorOrganizationId: '39', destinyOrigin: 'http://destiny' },
+    admission: { issuerOrgId: '39', hmacSecret: 'x'.repeat(32) },
+  };
+  fixture.fetcher.mockResolvedValue(Response.json(result));
+  const broker = { start: jest.fn(), callback: jest.fn() };
+  await expect(
+    fixture.service.startVn(vn, broker, { referral_token: referralToken }, fixture.setCookie)
+  ).rejects.toMatchObject({ status: 409 });
+  expect(broker.start).not.toHaveBeenCalled();
 });

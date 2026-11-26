@@ -494,13 +494,9 @@ export class DealerOnboardingController {
   @Post(':dealerRealm/review')
   @InitFeature(FEATURE_KEY.DEALER_ONBOARDING)
   async reviewVoltcred(@Req() req: ApplicantHttpRequest, @Res() res: Response) {
-    return handleApplicantRequest(
-      req,
-      res,
-      await this.publicSettings(req.params.dealerRealm),
-      'dealer',
-      this.relay.reviewVoltcred.bind(this.relay)
-    );
+    const realm = req.params.dealerRealm;
+    const scope = realm === 'vn' ? ((await this.vnSettings())?.scope ?? null) : await this.publicSettings(realm);
+    return handleApplicantRequest(req, res, scope, 'dealer', this.relay.reviewVoltcred.bind(this.relay));
   }
 
   @Post(':dealerRealm/agreement')
