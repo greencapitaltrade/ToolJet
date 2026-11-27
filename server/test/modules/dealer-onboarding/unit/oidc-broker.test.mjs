@@ -59,3 +59,24 @@ test('discovery endpoints stay under the configured issuer origin and path', asy
  for (const endpoint of [undefined, null, 42, {}, { toString: () => 'https://thor.example/oidc/token' }])
   assert.equal(dealerOidcEndpointAllowed(issuer, endpoint), false);
 });
+
+test('passes the authorization response issuer to the native relying party for validation', async () => {
+ const { Issuer } = await import('openid-client');
+ const provider = new Issuer({ issuer: config.issuer, authorization_endpoint: `${config.issuer}/auth`, authorization_response_iss_parameter_supported: true });
+ const nativeClient = new provider.Client({ client_id: config.clientId });
+ nativeClient.grant = async () => { throw new Error('exchange reached'); };
+ for (const issuer of ['https://wrong.example/oidc', undefined]) {
+  const broker = new DealerOidcBroker(config, store, nativeClient, resolve);
+  const state = new URL(await broker.start('c')).searchParams.get('state');
+  await assert.rejects(broker.callback({ state, code: 'code', ...(issuer ? { iss: issuer } : {}) }), /issuer|iss/i);
+ }
+ const broker = new DealerOidcBroker(config, store, nativeClient, resolve);
+ const state = new URL(await broker.start('c')).searchParams.get('state');
+ await assert.rejects(broker.callback({ state, code: 'code', iss: config.issuer }), /exchange reached/);
+ const optional = new Issuer({ issuer: config.issuer, authorization_endpoint: `${config.issuer}/auth` });
+ const optionalClient = new optional.Client({ client_id: config.clientId });
+ optionalClient.grant = nativeClient.grant;
+ const optionalBroker = new DealerOidcBroker(config, store, optionalClient, resolve);
+ const optionalState = new URL(await optionalBroker.start('c')).searchParams.get('state');
+ await assert.rejects(optionalBroker.callback({ state: optionalState, code: 'code' }), /exchange reached/);
+});

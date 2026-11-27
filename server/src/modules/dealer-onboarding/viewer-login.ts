@@ -9,7 +9,7 @@ type Sessions = {
 };
 type Broker = {
   start(continuation: string): Promise<string>;
-  callback(params: { state: string; code: string }): Promise<{ continuation: string; userId: string; organizationId: string; email: string }>;
+  callback(params: { state: string; code: string; iss?: string }): Promise<{ continuation: string; userId: string; organizationId: string; email: string }>;
 };
 const opaque = /^[A-Za-z0-9_-]{43}$/;
 const referralPattern = /^[A-Za-z0-9_-]{39,1021}$/;
@@ -43,7 +43,7 @@ export class DealerViewerLogin {
     return { id: session.id, state, url };
   }
 
-  async callback(params: { state: string; code: string }, id: string | undefined, stateCookie: string | undefined) {
+  async callback(params: { state: string; code: string; iss?: string }, id: string | undefined, stateCookie: string | undefined) {
     if (!params || !opaque.test(params.state) || params.state !== stateCookie) return failure();
     const key = this.sessions.key(this.scope, id);
     const guest = key && await this.sessions.get(key);

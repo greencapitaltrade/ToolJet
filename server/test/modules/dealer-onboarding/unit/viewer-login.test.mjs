@@ -84,3 +84,17 @@ test('accepts bounded unversioned tokens and rejects prefixed or malformed token
   for (const token of ['a'.repeat(39), 'a'.repeat(1021)]) await login.start(token);
   for (const token of ['a'.repeat(38), 'a'.repeat(1022), `v3.${'a'.repeat(40)}`, `${'a'.repeat(39)}=`]) await assert.rejects(login.start(token));
 });
+
+test('forwards the issuer response to the broker', async () => {
+  const { login } = fixture();
+  const start = await login.start(referral);
+  let received;
+  const original = login.broker.callback;
+  login.broker.callback = async (params) => {
+    received = params;
+    return original(params);
+  };
+  const params = { state: start.state, code: 'code', iss: 'https://thor.example/oidc' };
+  await login.callback(params, start.id, start.state);
+  assert.deepEqual(received, params);
+});

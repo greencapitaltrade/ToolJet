@@ -88,8 +88,13 @@ export class DealerViewerController {
     res.clearCookie(FLOW_COOKIE, cookie); res.clearCookie(STATE_COOKIE, cookie);
     try {
       const ctx = await this.context();
-      if (typeof req.query.state !== 'string' || typeof req.query.code !== 'string') throw new Error();
-      const session = await ctx.login.callback({ state: req.query.state, code: req.query.code }, req.cookies?.[FLOW_COOKIE], req.cookies?.[STATE_COOKIE]);
+      const { state, code, iss } = req.query;
+      if (typeof state !== 'string' || typeof code !== 'string' ||
+        (iss !== undefined && (typeof iss !== 'string' || !iss))) throw new Error();
+      const session = await ctx.login.callback(
+        { state, code, ...(iss !== undefined ? { iss } : {}) },
+        req.cookies?.[FLOW_COOKIE], req.cookies?.[STATE_COOKIE]
+      );
       res.cookie(DEALER_VIEWER_COOKIE, session.id, { ...cookie, maxAge: 1800000 });
       return res.redirect(303, `${ctx.redirect}${session.director ? '?director=1' : ''}`);
     } catch { return res.status(503).send('Dealer login unavailable'); }

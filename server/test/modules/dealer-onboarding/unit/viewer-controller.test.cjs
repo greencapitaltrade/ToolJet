@@ -36,3 +36,46 @@ test('constructs a broker using each configured tenant', async () => {
     assert.equal(brokerConfig.organizationId, organizationId);
   }
 });
+
+test('forwards scalar issuer and rejects malformed issuer query values', async () => {
+  const controller = new loaded.exports.DealerViewerController({}, {}, {});
+  const calls = [];
+  controller.context = async () => ({
+    redirect: '/applications/dealer',
+    login: {
+      callback: async (...args) => {
+        calls.push(args);
+        return { id: 'session' };
+      },
+    },
+  });
+  const response = () => ({
+    set() {},
+    clearCookie() {},
+    cookie() {},
+    status(code) { this.statusCode = code; return this; },
+    send() { return this; },
+    redirect(code, path) { this.statusCode = code; this.path = path; return this; },
+  });
+  const state = 's'.repeat(43);
+  const request = (iss) => ({
+    query: { state, code: 'code', ...(iss === undefined ? {} : { iss }) },
+    cookies: { '__Host-tj-dealer-flow': 'flow', '__Host-tj-dealer-state': state },
+  });
+  const ok = response();
+  await controller.callback(request(oidc.issuer), ok);
+  assert.equal(ok.statusCode, 303);
+  assert.equal(ok.path, '/applications/dealer');
+  assert.deepEqual(calls[0][0], { state, code: 'code', iss: oidc.issuer });
+
+  const noIssuer = response();
+  await controller.callback(request(undefined), noIssuer);
+  assert.deepEqual(calls[1][0], { state, code: 'code' });
+
+  for (const iss of [['https://thor.example/oidc', 'https://thor.example/oidc'], {}, '', null]) {
+    const res = response();
+    await controller.callback(request(iss), res);
+    assert.equal(res.statusCode, 503);
+  }
+  assert.equal(calls.length, 2);
+});

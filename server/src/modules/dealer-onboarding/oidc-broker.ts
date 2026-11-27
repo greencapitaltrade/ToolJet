@@ -27,7 +27,7 @@ type Pending = { continuation: string; nonce: string; verifier: string };
 type Store = { put(state: string, value: Pending): Promise<void>; take(state: string): Promise<Pending | null | undefined> };
 type Client = {
   authorizationUrl(params: Record<string, string>): string;
-  callback(uri: string, params: { state: string; code: string }, checks: { state: string; nonce: string; code_verifier: string }): Promise<{ claims(): Record<string, unknown> }>;
+  callback(uri: string, params: { state: string; code: string; iss?: string }, checks: { state: string; nonce: string; code_verifier: string }): Promise<{ claims(): Record<string, unknown> }>;
 };
 type Resolver = (subject: string) => Promise<{ sub: unknown; organization_id: unknown }>;
 
@@ -62,9 +62,10 @@ export class DealerOidcBroker {
       prompt: 'login', enrollment_intent: `${payload}.${signature}` });
   }
 
-  async callback(params: { state: string; code: string }) {
+  async callback(params: { state: string; code: string; iss?: string }) {
     if (!params || typeof params.state !== 'string' || !/^[A-Za-z0-9_-]{43}$/.test(params.state) ||
-      typeof params.code !== 'string' || !params.code || params.code.length > 2048) throw new Error('Invalid callback');
+      typeof params.code !== 'string' || !params.code || params.code.length > 2048 ||
+      (params.iss !== undefined && (typeof params.iss !== 'string' || !params.iss))) throw new Error('Invalid callback');
     const pending = await this.store.take(params.state);
     if (!pending) throw new Error('Expired callback');
     const token = await this.client.callback(this.config.redirectUri, params,
