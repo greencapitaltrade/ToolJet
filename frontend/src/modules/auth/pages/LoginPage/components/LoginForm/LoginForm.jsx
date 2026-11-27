@@ -44,7 +44,7 @@ const LoginForm = ({
     : configs?.openid?.enabled;
 
   const isAnySSOEnabled =
-    isConfiguredOidcEnabled(organizationId) ||
+    isConfiguredOidcEnabled(organizationId, configs) ||
     configs?.google?.enabled ||
     configs?.git?.enabled ||
     configs?.ldap?.enabled ||

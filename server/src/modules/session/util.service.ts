@@ -37,7 +37,8 @@ import { EncryptionService } from '@modules/encryption/service';
 import { OnboardingStatus } from '@modules/onboarding/constants';
 import { RequestContext } from '@modules/request-context/service';
 import { SessionType } from '@modules/external-apis/constants';
-import { getConfiguredOidcSettings, type OidcIdentity } from '@modules/auth/oauth/configured-oidc.config';
+import type { OidcIdentity } from '@modules/auth/oauth/configured-oidc.config';
+import { resolveWorkspaceOidc } from '@modules/auth/oauth/configured-oidc.workspace-settings';
 
 @Injectable()
 export class SessionUtilService {
@@ -212,8 +213,11 @@ export class SessionUtilService {
   }
 
   async getOidcActor(user: Pick<User, 'id' | 'sessionId' | 'organizationId'>): Promise<OidcIdentity> {
-    const settings = getConfiguredOidcSettings();
-    if (!settings || !user?.id || !user.sessionId || user.organizationId !== settings.workspaceId) {
+    if (!user?.id || !user.sessionId || !user.organizationId) {
+      throw new UnauthorizedException();
+    }
+    const settings = await resolveWorkspaceOidc(user.organizationId);
+    if (!settings) {
       throw new UnauthorizedException();
     }
     const session = await dbTransactionWrap((manager: EntityManager) =>
@@ -228,7 +232,12 @@ export class SessionUtilService {
       })
     );
     const identity = session?.oidcIdentity;
-    if (identity?.issuer !== settings.issuer || identity.clientId !== settings.clientId || !identity.sub) {
+    if (
+      identity?.issuer !== settings.issuer ||
+      identity.clientId !== settings.clientId ||
+      identity.revision !== settings.revision ||
+      !identity.sub
+    ) {
       throw new UnauthorizedException();
     }
     return { issuer: identity.issuer, sub: identity.sub, clientId: identity.clientId };

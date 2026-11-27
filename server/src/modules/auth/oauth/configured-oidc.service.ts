@@ -12,14 +12,15 @@ import {
   CONFIGURED_OIDC_FLOW,
   CONFIGURED_OIDC_FLOW_LIFETIME_MS,
   SSOResponseRepository,
+  WORKSPACE_OIDC_FLOW,
 } from './repository/sso-response.repository';
 import {
-  getConfiguredOidcSettings,
+  getConfiguredOidcLocation,
   isHttpsUrl,
   type ConfiguredOidcSettings,
   type OidcIdentity,
-  oidcReturnPath,
 } from './configured-oidc.config';
+import { resolveWorkspaceOidc, workspaceOidcReturnPath } from './configured-oidc.workspace-settings';
 
 const FLOW_COOKIE = 'tj_oidc_flow';
 
@@ -30,16 +31,20 @@ export class ConfiguredOidcService {
     private readonly sessions: SessionUtilService
   ) {}
 
-  async start(response: Response, returnTo: unknown): Promise<string> {
-    const settings = this.getSettings();
+  async start(response: Response, returnTo: unknown, workspaceId?: string): Promise<string> {
+    const settings = await resolveWorkspaceOidc(workspaceId);
+    if (!settings) throw new NotFoundException();
     const client = await this.getClient(settings);
     const state = randomUUID();
     const nonce = generators.nonce();
     const codeVerifier = generators.codeVerifier();
+    const connector = settings.revision
+      ? { workspaceId: settings.workspaceId, revision: settings.revision }
+      : undefined;
     const flow = await this.challenges.createSSOResponse(
       state,
-      JSON.stringify({ nonce, codeVerifier, returnTo: oidcReturnPath(returnTo, settings) }),
-      CONFIGURED_OIDC_FLOW
+      JSON.stringify({ nonce, codeVerifier, returnTo: await workspaceOidcReturnPath(returnTo, settings), connector }),
+      connector ? WORKSPACE_OIDC_FLOW : CONFIGURED_OIDC_FLOW
     );
 
     response.cookie(FLOW_COOKIE, flow.id, {
@@ -57,17 +62,22 @@ export class ConfiguredOidcService {
   }
 
   async complete(request: Request, response: Response): Promise<string> {
-    const settings = this.getSettings();
+    const location = getConfiguredOidcLocation();
+    if (!location) throw new NotFoundException();
     const flowId = request.cookies?.[FLOW_COOKIE];
-    response.clearCookie(FLOW_COOKIE, this.cookieOptions(settings));
+    response.clearCookie(FLOW_COOKIE, this.cookieOptions(location));
     if (!isUuid(flowId)) throw new UnauthorizedException();
 
     try {
+      const { state, code } = request.query;
+      if (typeof state !== 'string' || !isUuid(state) || typeof code !== 'string') throw new UnauthorizedException();
+      const flow = await this.challenges.consumeConfiguredOidc(flowId, state);
+      if (!flow) throw new UnauthorizedException();
+      const settings = await resolveWorkspaceOidc(flow.connector?.workspaceId);
+      if (!settings || settings.revision !== flow.connector?.revision) throw new UnauthorizedException();
       const client = await this.getClient(settings);
       const params = client.callbackParams(request);
-      if (!isUuid(params.state) || typeof params.code !== 'string') throw new UnauthorizedException();
-      const flow = await this.challenges.consumeConfiguredOidc(flowId, params.state);
-      if (!flow) throw new UnauthorizedException();
+      if (params.state !== state || params.code !== code) throw new UnauthorizedException();
 
       const token = await client.callback(settings.redirectUri, params, {
         state: params.state,
@@ -81,13 +91,23 @@ export class ConfiguredOidcService {
       }
 
       const email = claims.email_verified === true && typeof claims.email === 'string' ? claims.email : undefined;
+      const returnTo = await workspaceOidcReturnPath(flow.returnTo, settings);
+      const active = await resolveWorkspaceOidc(settings.workspaceId);
+      if (!active || active.revision !== settings.revision) {
+        throw new UnauthorizedException();
+      }
       await this.establishSession(
         response,
         settings.workspaceId,
-        { issuer: claims.iss, sub: claims.sub, clientId: settings.clientId },
+        {
+          issuer: claims.iss,
+          sub: claims.sub,
+          clientId: settings.clientId,
+          ...(settings.revision && { revision: settings.revision }),
+        },
         email
       );
-      return oidcReturnPath(flow.returnTo, settings);
+      return returnTo;
     } catch {
       // Provider callback errors may include the code or token response.
       throw new UnauthorizedException('OIDC sign-in could not be completed');
@@ -141,12 +161,6 @@ export class ConfiguredOidcService {
     });
   }
 
-  private getSettings() {
-    const settings = getConfiguredOidcSettings();
-    if (!settings) throw new NotFoundException();
-    return settings;
-  }
-
   private async getClient(settings: ConfiguredOidcSettings) {
     const provider = await Issuer.discover(settings.issuer).catch(() => {
       throw new UnauthorizedException('OIDC provider is unavailable');
@@ -167,7 +181,7 @@ export class ConfiguredOidcService {
     });
   }
 
-  private cookieOptions(settings: ConfiguredOidcSettings) {
+  private cookieOptions(settings: Pick<ConfiguredOidcSettings, 'subpath'>) {
     return {
       httpOnly: true,
       secure: true,

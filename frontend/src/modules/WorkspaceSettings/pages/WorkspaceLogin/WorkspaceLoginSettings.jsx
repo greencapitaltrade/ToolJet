@@ -15,6 +15,7 @@ import Spinner from 'react-bootstrap/Spinner';
 import ConfirmDisableAutoSSOModal from '@/_components/ConfirmDisableAutoSSOLoginModal';
 import AutoSSOLogin from './components/AutoSSOLogin';
 import SSOConfigurationList from './components/SSOConfigurationList';
+import ManagedOidcSettings from './components/ManagedOidcSettings';
 class OrganizationLogin extends React.Component {
   protectedSSO = ['openid', 'ldap', 'saml', 'google', 'github'];
   constructor(props) {
@@ -36,6 +37,7 @@ class OrganizationLogin extends React.Component {
       isCommunity: false,
       canToggleAutomaticSSOLogin: false,
       showDisableAutoSSOModal: false,
+      managedOidc: null,
     };
     this.copyFunction = this.copyFunction.bind(this);
   }
@@ -236,6 +238,7 @@ class OrganizationLogin extends React.Component {
       featureAccess: featureAccess,
       isBasicPlan: isBasicPlan,
       isCommunity: isCommunity,
+      managedOidc: settings.managed_oidc,
       canToggleAutomaticSSOLogin: canToggleAutomaticSSOLogin,
       isAnySSOEnabled:
         ssoConfigs?.some(
@@ -670,6 +673,19 @@ class OrganizationLogin extends React.Component {
                     updateSSOOptions={this.updateSSOOptions}
                     updateDefaultSSO={this.updateDefaultSSO}
                   />
+                  {this.state.managedOidc && (
+                    <ManagedOidcSettings
+                      key={`${this.state.managedOidc.workspace_id}:${this.state.managedOidc.enabled}:${this.state.managedOidc.using_deployment_default}`}
+                      registration={this.state.managedOidc}
+                      onSaved={(registration) =>
+                        this.setState((previous) =>
+                          previous.managedOidc?.workspace_id === registration.workspace_id
+                            ? { managedOidc: registration }
+                            : null
+                        )
+                      }
+                    />
+                  )}
                 </div>
               </div>
               <div className="card-footer">

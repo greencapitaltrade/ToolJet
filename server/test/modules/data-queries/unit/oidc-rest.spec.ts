@@ -46,6 +46,7 @@ describe('Native REST queries with verified OIDC identity', () => {
       TOOLJET_OIDC_CLIENT_SECRET: 'test-only',
       TOOLJET_OIDC_ISSUER: issuer,
       TOOLJET_OIDC_WORKSPACE_ID: id,
+      TOOLJET_OIDC_CONNECTORS: undefined,
       TOOLJET_OIDC_REST_SOURCES: JSON.stringify({ [id]: origin }),
       TOOLJET_OIDC_THOR_ORIGIN: thor,
     });
@@ -98,6 +99,32 @@ describe('Native REST queries with verified OIDC identity', () => {
       expect.objectContaining({
         redirect: 'error',
         headers: { 'x-gct-oidc-issuer': issuer, 'x-gct-oidc-client-id': 'test-client' },
+      })
+    );
+  });
+
+  it('selects the current workspace registration without accepting a different session client', async () => {
+    const managedWorkspace = '94db67ea-e2e7-47ba-9d92-95cab041e726';
+    const managedUser = { ...user, organizationId: managedWorkspace };
+    process.env.TOOLJET_OIDC_CONNECTORS = JSON.stringify({
+      [managedWorkspace]: {
+        issuer,
+        clientId: 'managed-client',
+        clientSecretEnv: 'TOOLJET_OIDC_CLIENT_SECRET',
+      },
+    });
+
+    await expect(prepareOidcRestQuery(origin, saved, parsed, source, managedUser, sessions)).rejects.toMatchObject({
+      data: { status: 401 },
+    });
+    expect(fetch).not.toHaveBeenCalled();
+
+    getOidcActor.mockResolvedValueOnce({ issuer, clientId: 'managed-client', sub: userId });
+    await prepareOidcRestQuery(origin, saved, parsed, source, managedUser, sessions);
+    expect(fetch).toHaveBeenCalledWith(
+      `${thor}/v1/users/oidc-subject/${userId}`,
+      expect.objectContaining({
+        headers: { 'x-gct-oidc-issuer': issuer, 'x-gct-oidc-client-id': 'managed-client' },
       })
     );
   });

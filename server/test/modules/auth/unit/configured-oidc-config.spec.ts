@@ -1,68 +1,63 @@
-import { assertConfiguredOidcSettings, getConfiguredOidcSettings } from '@modules/auth/oauth/configured-oidc.config';
+import { getConfiguredOidcSettings, getManagedOidcRegistrations } from '@modules/auth/oauth/configured-oidc.config';
 
 /** @group platform */
-describe('Configured workspace OIDC settings', () => {
+describe('Configured workspace OIDC registrations', () => {
   const workspaceId = '6b5aa378-072f-4022-977e-0066545ee3c6';
   const otherWorkspaceId = '94db67ea-e2e7-47ba-9d92-95cab041e726';
   const credential = 'TOOLJET_OIDC_CLIENT_SECRET';
   const connector = { issuer: 'https://accounts.example.test/oidc', clientId: 'staff', clientSecretEnv: credential };
-  const common = {
+  const managed = { ...connector, clientId: 'other-staff', clientSecretEnv: `${credential}_MANAGED` };
+  const legacy = {
     TOOLJET_EDITION: 'ce',
     TOOLJET_HOST: 'https://tools.example.test',
     SUB_PATH: '/tools/',
-    [credential]: 'fixture-secret',
-  };
-  const legacy = {
-    ...common,
+    TOOLJET_OIDC_WORKSPACE_ID: workspaceId,
     TOOLJET_OIDC_ISSUER: connector.issuer,
     TOOLJET_OIDC_CLIENT_ID: connector.clientId,
-    TOOLJET_OIDC_WORKSPACE_ID: workspaceId,
+    [credential]: 'fixture-secret',
+    [managed.clientSecretEnv]: 'fixture-managed-secret',
   };
-  const managed = { ...common, TOOLJET_OIDC_CONNECTORS: JSON.stringify({ [workspaceId.toUpperCase()]: connector }) };
+  const registered = (mapping: unknown) => ({ ...legacy, TOOLJET_OIDC_CONNECTORS: JSON.stringify(mapping) });
 
-  it('resolves the same registration and callback with legacy, managed or both settings', () => {
-    const settings = getConfiguredOidcSettings(legacy);
-    expect(settings).toEqual({
+  it('keeps the same legacy registration and prepares a distinct client for another workspace', () => {
+    const env = registered({ [workspaceId.toUpperCase()]: connector, [otherWorkspaceId]: managed });
+    expect(getManagedOidcRegistrations(env).get(workspaceId)).toEqual(getConfiguredOidcSettings(legacy));
+    expect(getManagedOidcRegistrations(env).get(otherWorkspaceId)).toMatchObject({
+      workspaceId: otherWorkspaceId,
       issuer: connector.issuer,
-      clientId: connector.clientId,
-      clientSecret: 'fixture-secret',
-      workspaceId,
-      origin: 'https://tools.example.test',
-      subpath: '/tools',
+      clientId: managed.clientId,
+      clientSecret: 'fixture-managed-secret',
       redirectUri: 'https://tools.example.test/tools/api/oauth/oidc/callback',
     });
-    expect(getConfiguredOidcSettings(managed)).toEqual(settings);
-    expect(getConfiguredOidcSettings({ ...legacy, TOOLJET_OIDC_CONNECTORS: managed.TOOLJET_OIDC_CONNECTORS })).toEqual(
-      settings
-    );
-    expect(() => assertConfiguredOidcSettings(managed)).not.toThrow();
+    expect(getConfiguredOidcSettings(env)).toEqual(getConfiguredOidcSettings(legacy));
   });
 
   it.each([
     ['malformed JSON', '{'],
-    ['an empty mapping', '{}'],
     ['an array', JSON.stringify([connector])],
-    ['a second workspace', JSON.stringify({ [workspaceId]: connector, [otherWorkspaceId]: connector })],
     ['an invalid workspace', JSON.stringify({ invalid: connector })],
     ['an invalid issuer', JSON.stringify({ [workspaceId]: { ...connector, issuer: 'http://accounts.example.test' } })],
     [
       'a missing managed secret',
-      JSON.stringify({ [workspaceId]: { ...connector, clientSecretEnv: `${credential}_NEW` } }),
+      JSON.stringify({ [otherWorkspaceId]: { ...managed, clientSecretEnv: 'TOOLJET_OIDC_CLIENT_SECRET_MISSING' } }),
     ],
-    ['an unrelated credential', JSON.stringify({ [workspaceId]: { ...connector, clientSecretEnv: 'PG_PASS' } })],
-  ])('rejects %s before the CE server starts', (_reason, value) => {
-    const env = { ...legacy, PG_PASS: 'fixture-db-password', TOOLJET_OIDC_CONNECTORS: value };
-    expect(getConfiguredOidcSettings(env)).toBeNull();
-    expect(() => assertConfiguredOidcSettings(env)).toThrow(/^Invalid TOOLJET_OIDC_CONNECTORS configuration$/);
+    ['an unrelated credential', JSON.stringify({ [otherWorkspaceId]: { ...managed, clientSecretEnv: 'PG_PASS' } })],
+    ['a legacy client assigned to a second workspace', JSON.stringify({ [otherWorkspaceId]: connector })],
+    ['a conflicting legacy client', JSON.stringify({ [workspaceId]: managed })],
+    [
+      'duplicate workspace keys with different case',
+      JSON.stringify({ [otherWorkspaceId]: managed, [otherWorkspaceId.toUpperCase()]: managed }),
+    ],
+  ])('rejects %s', (_reason, value) => {
+    expect(() =>
+      getManagedOidcRegistrations({ ...legacy, PG_PASS: 'fixture', TOOLJET_OIDC_CONNECTORS: value })
+    ).toThrow(/^Invalid TOOLJET_OIDC_CONNECTORS configuration$/);
   });
 
-  it('rejects disagreement with legacy routing and keeps legacy-only and other editions compatible', () => {
-    const conflict = { ...legacy, ...managed, TOOLJET_OIDC_CLIENT_ID: 'old-client' };
-    expect(getConfiguredOidcSettings(conflict)).toBeNull();
-    expect(() => assertConfiguredOidcSettings(conflict)).toThrow();
-
-    expect(getConfiguredOidcSettings({ ...managed, TOOLJET_EDITION: 'ee' })).toBeNull();
-    expect(() => assertConfiguredOidcSettings({ ...managed, TOOLJET_EDITION: 'ee' })).not.toThrow();
-    expect(() => assertConfiguredOidcSettings({ TOOLJET_HOST: 'https://tools.example.test' })).not.toThrow();
+  it('preserves installs without managed settings and other editions', () => {
+    expect(getManagedOidcRegistrations(legacy).size).toBe(0);
+    expect(getManagedOidcRegistrations({ ...legacy, TOOLJET_EDITION: 'ee', TOOLJET_OIDC_CONNECTORS: '{' }).size).toBe(
+      0
+    );
   });
 });

@@ -1,6 +1,6 @@
 # Configured OpenID Connect in Community Edition
 
-Configure one HTTPS issuer and one ToolJet workspace on every server instance. The legacy environment variables are:
+The existing default registration uses these deployment settings:
 
 - `TOOLJET_OIDC_ISSUER` is the provider's declared issuer URL.
 - `TOOLJET_OIDC_CLIENT_ID` and `TOOLJET_OIDC_CLIENT_SECRET` are the registered confidential client credentials.
@@ -19,11 +19,23 @@ Set `TOOLJET_OIDC_CONNECTORS` to a JSON object keyed by the ToolJet workspace UU
     "issuer": "https://accounts.example.test/oidc",
     "clientId": "staff",
     "clientSecretEnv": "TOOLJET_OIDC_CLIENT_SECRET"
+  },
+  "94db67ea-e2e7-47ba-9d92-95cab041e726": {
+    "issuer": "https://accounts.example.test/oidc",
+    "clientId": "staff-second-workspace",
+    "clientSecretEnv": "TOOLJET_OIDC_CLIENT_SECRET_SECOND"
   }
 }
 ```
 
-This release accepts one entry. Keep the legacy settings during a rolling upgrade and binary rollback. If both forms are set, they must resolve to the same issuer, client, credential and workspace. An invalid or conflicting managed setting prevents server startup. Start and callback URLs, the one-time challenge, and native session stamps use the existing formats.
+Provision one registration per workspace and use a distinct issuer/client pair for each. The workspace administrator can review the issuer, client ID and callback and enable the registration in **Workspace Settings → Workspace Login → OpenID Connect**. The server resolves the operator-provisioned credentials. Start requests include `workspaceId` from the selected workspace or saved app; the shared callback reads the workspace and activation revision from the persisted challenge. Disabling a managed registration also blocks its protected REST actor resolution.
+
+### Rolling upgrade
+
+1. Apply the additive workspace settings migration before starting the new image. Keep the legacy variables during migration and binary rollback.
+2. Mirror the existing registration exactly if enabling Settings management for the legacy workspace. Its cached launch URL, challenge format and session stamp remain compatible. Invalid or conflicting managed configuration prevents server startup. Keep `TOOLJET_OIDC_WORKSPACE_SETTINGS_ENABLED` off until every replica has the new image and the same registrations.
+3. Open workspace Settings writes with `TOOLJET_OIDC_WORKSPACE_SETTINGS_ENABLED=true`. Enable a new registration from its workspace only after every Thor and ToolJet replica can read its registration. Exercise start and callback on separate replicas and verify a private saved query. A workspace without a provisioned connector keeps its existing login methods.
+4. **Restore deployment default** clears the workspace selection. The legacy workspace resumes using its original registration. A managed-only workspace returns to its existing login methods, with pending managed challenges and session proofs invalidated. Freezing Settings writes preserves stored selections. Restore the legacy default and withdraw additional workspace flows before using a binary that only reads the original registration.
 
 ## Workspace members and sessions
 

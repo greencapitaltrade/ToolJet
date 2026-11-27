@@ -51,6 +51,7 @@ the right plugin, per-Environment credentials, and `{{ }}` templates before invo
 ## Invariants & gotchas
 
 - A Query belongs to an **App Version**, not an App — every CRUD route is version-scoped.
+- For a protected REST source, the native session stamp must match the active OIDC registration of the authenticated workspace. Disabling that registration invalidates the stamp for protected queries.
 - Query name unique per app version — enforced via `pg_advisory_xact_lock` in `assertUniqueQueryName`
   (service.ts), not a DB constraint; keep name changes inside `dbTransactionWrap`.
 - Create/update are blocked on promoted versions (`validateQueryActionsAgainstEnvironment`) — only the

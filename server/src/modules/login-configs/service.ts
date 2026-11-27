@@ -14,6 +14,8 @@ import { AUDIT_LOGS_REQUEST_CONTEXT_KEY } from '@modules/app/constants';
 import { RequestContext } from '@modules/request-context/service';
 import { SsoConfigOidcGroupSyncRepository } from './oidc-group-sync.repository';
 import { PinoLogger } from 'nestjs-pino';
+import { getConfiguredOidcSettings } from '@modules/auth/oauth/configured-oidc.config';
+import { describeWorkspaceOidc, resolveWorkspaceOidc } from '@modules/auth/oauth/configured-oidc.workspace-settings';
 
 @Injectable()
 export class LoginConfigsService implements ILoginConfigsService {
@@ -34,7 +36,10 @@ export class LoginConfigsService implements ILoginConfigsService {
     }
     if (!organizationId) {
       const result = await this.loginConfigsUtilService.constructSSOConfigs(existingOrganizationId);
-      return result;
+      const legacy = getConfiguredOidcSettings();
+      return legacy
+        ? { ...result, configuredOidcEnabled: Boolean(await resolveWorkspaceOidc(legacy.workspaceId)) }
+        : result;
     }
 
     try {
@@ -48,7 +53,10 @@ export class LoginConfigsService implements ILoginConfigsService {
       if (!result) {
         throw new NotFoundException('Organization not found');
       }
-      return this.loginConfigsUtilService.removeDisabledSsoConfigs(result);
+      return {
+        ...this.loginConfigsUtilService.removeDisabledSsoConfigs(result),
+        configuredOidcEnabled: Boolean(result.id && (await resolveWorkspaceOidc(result.id))),
+      };
     } catch (error) {
       // Preserve any deliberate HTTP error (e.g. archived-workspace 400) thrown further down the stack.
       if (error instanceof HttpException) {
@@ -71,6 +79,7 @@ export class LoginConfigsService implements ILoginConfigsService {
     return {
       organization_details: decamelizedOrganizationDetails,
       instance_configs: decamelizedInstanceConfigs,
+      managed_oidc: decamelizeKeys(await describeWorkspaceOidc(organizationId)),
     };
   }
 

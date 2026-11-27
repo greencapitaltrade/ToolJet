@@ -25,16 +25,12 @@ describe('SessionUtilService configured OIDC actor', () => {
       TOOLJET_OIDC_CONNECTORS: undefined,
     });
     manager.findOne.mockReset();
+    jest.spyOn(database, 'getDBConnection').mockReturnValue({ query: jest.fn().mockResolvedValue([]) } as never);
     jest.spyOn(database, 'dbTransactionWrap').mockImplementation(async (operation) => operation(manager));
   });
   afterEach(() => jest.restoreAllMocks());
 
-  it.each([false, true])('resolves the existing native session actor (managed connector: %s)', async (managed) => {
-    if (managed) {
-      process.env.TOOLJET_OIDC_CONNECTORS = JSON.stringify({
-        [workspaceId]: { issuer, clientId, clientSecretEnv: 'TOOLJET_OIDC_CLIENT_SECRET' },
-      });
-    }
+  it('uses the existing authenticated user and active native session to resolve an actor', async () => {
     manager.findOne.mockResolvedValue({ oidcIdentity: actor });
 
     await expect(service.getOidcActor(user)).resolves.toEqual(actor);
@@ -47,6 +43,28 @@ describe('SessionUtilService configured OIDC actor', () => {
       },
       select: { oidcIdentity: true },
     });
+  });
+
+  it('requires the session stamp to match the active workspace registration', async () => {
+    const otherWorkspace = '94db67ea-e2e7-47ba-9d92-95cab041e726';
+    const registration = { issuer, client_id: 'other-client', enabled: true, revision: 'revision' };
+    process.env.TOOLJET_OIDC_CONNECTORS = JSON.stringify({
+      [otherWorkspace]: { issuer, clientId: registration.client_id, clientSecretEnv: 'TOOLJET_OIDC_CLIENT_SECRET' },
+    });
+    jest.spyOn(database, 'getDBConnection').mockReturnValue({
+      query: jest.fn().mockResolvedValue([registration]),
+    } as never);
+    manager.findOne.mockResolvedValueOnce({ oidcIdentity: actor });
+    const switchedUser = { ...user, organizationId: otherWorkspace };
+    await expect(service.getOidcActor(switchedUser)).rejects.toThrow(UnauthorizedException);
+
+    const matchingActor = { ...actor, clientId: registration.client_id };
+    manager.findOne.mockResolvedValueOnce({ oidcIdentity: matchingActor });
+    await expect(service.getOidcActor(switchedUser)).rejects.toThrow(UnauthorizedException);
+    manager.findOne.mockResolvedValue({ oidcIdentity: { ...matchingActor, revision: registration.revision } });
+    await expect(service.getOidcActor(switchedUser)).resolves.toEqual(matchingActor);
+    registration.enabled = false;
+    await expect(service.getOidcActor(switchedUser)).rejects.toThrow(UnauthorizedException);
   });
 
   it('rejects another workspace before looking up a session', async () => {

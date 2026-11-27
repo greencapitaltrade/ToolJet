@@ -15,12 +15,12 @@ const BaseSSOAuthModule = ({
 }) => {
   return (
     <>
-      {isConfiguredOidcEnabled(organizationId) && (
+      {isConfiguredOidcEnabled(organizationId, configs) && (
         <div className="login-sso-wrapper">
           <SSOButtonWrapper
             onClick={(event) => {
               event.preventDefault();
-              startConfiguredOidc(redirectTo);
+              startConfiguredOidc(redirectTo, organizationId);
             }}
             icon="assets/images/sso-buttons/openid.svg"
             text={`${buttonText} OpenID Connect`}
