@@ -39,12 +39,30 @@ export async function dealerViewerActor(raw: string, secret: string, binding: Bi
 }
 
 
-type NativeOptions = { method?: string; url?: string; body_toggle?: unknown; body?: unknown; raw_body?: unknown; json_body?: unknown };
+type NativeOptions = { method?: string; url?: string; body_toggle?: unknown; body?: unknown; raw_body?: unknown; json_body?: unknown; url_params?: unknown; url_parameters?: unknown };
 const referralRoutes = new Set(['/v1/channel-partners/intakes/lookup', '/v1/channel-partners/intakes']);
 const forbiddenInput = new Set(['referraltoken', 'parentid', 'userid', 'organizationid', 'orgid', 'actor', 'actorid', 'emailverified', 'personid', 'token']);
 
 /** Apply only to the fixed saved native intake operations, after template resolution. */
-export function bindDealerReferral<T extends NativeOptions>(saved: NativeOptions, parsed: T, actor: { referral: string; userId: string; email: string; personToken?: string; participantClaim?: boolean }): T {
+export function bindDealerReferral<T extends NativeOptions>(saved: NativeOptions, parsed: T, actor: { referral: string; userId: string; email: string; personToken?: string; participantClaim?: boolean }, source: NativeOptions = {}): T {
+  const financialStart = saved.method === 'post' && saved.url === '/v1/channel-partners/financial-data';
+  const financialFollow = (saved.method === 'get' && /^\/v1\/channel-partners\/financial-data\/[^/]+$/.test(parsed.url ?? '')) ||
+    (saved.method === 'post' && /^\/v1\/channel-partners\/financial-data\/[^/]+\/(sync|data)$/.test(parsed.url ?? ''));
+  const uuid = (value: unknown) => typeof value === 'string' && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+  if (!actor.personToken && (financialStart || financialFollow)) {
+    const rows = (value: unknown) => Array.isArray(value) ? value : [];
+    if ([...rows(source.url_params), ...rows(source.url_parameters)].some((row) => Array.isArray(row) && row[0] === 'draft_id')) throw new Error('Invalid financial scope');
+    if (financialFollow) {
+      const scopes = rows(parsed.url_params).filter((row) => Array.isArray(row) && row[0] === 'draft_id');
+      if (scopes.length !== 1 || !uuid(scopes[0][1])) throw new Error('Invalid financial scope');
+      return parsed;
+    }
+    if (parsed.body_toggle !== true || saved.body_toggle !== true || !Array.isArray(parsed.body) || parsed.body.length || !Array.isArray(saved.body) || saved.body.length || parsed.json_body !== undefined || saved.json_body !== undefined || typeof parsed.raw_body !== 'string') throw new Error('Invalid financial scope');
+    let packet: any;
+    try { packet = JSON.parse(parsed.raw_body)?.input; } catch { throw new Error('Invalid financial scope'); }
+    if (!packet || typeof packet !== 'object' || Array.isArray(packet) || !uuid(packet.draft_id) || !Number.isSafeInteger(packet.version) || packet.version < 1 || !['bank', 'gst'].includes(packet.purpose) || typeof packet.mobile !== 'string' || !packet.mobile.trim() || typeof packet.request_id !== 'string' || !packet.request_id.trim()) throw new Error('Invalid financial scope');
+    return parsed;
+  }
   const claim = saved.method === 'post' && saved.url === '/v1/channel-partners/named-person-consent-handoffs/claim';
   const issue = saved.method === 'post' && saved.url === '/v1/channel-partners/intakes/{{parameters.draftId}}/person-consent-handoffs';
   const selfie = saved.method === 'post' && saved.url === '/v1/channel-partners/person-consents/{{parameters.consentId}}/selfie';

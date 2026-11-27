@@ -23,7 +23,7 @@ test('rejects forged input and alternate transport controls', () => {
   ]) assert.throws(() => bindDealerReferral(base, { ...base, ...change }, actor));
 });
 test('does not rewrite other routes', () => {
-  const other = { ...base, url: '/v1/channel-partners/financial-data' };
+  const other = { ...base, url: '/v1/channel-partners/unrelated' };
   assert.equal(bindDealerReferral(other, other, actor), other);
 });
 test('requires a valid stored referral with the verified actor', async () => {
@@ -181,4 +181,23 @@ test('director selfie wire packet passes the actual Destiny JPEG parser', { skip
   await widget.selfie(receipt, '/9j/AP/Z');
   assert.equal(wire.input.referral_token, referral);
   assert.equal(parseJpegDataUrl(wire.input.selfie), '/9j/AP/Z');
+});
+
+test('requires scoped owner financial data requests', () => {
+  const draft = 'abcdefab-1234-1234-1234-123456789abc';
+  const input = { draft_id: draft, version: 2, purpose: 'bank', mobile: '9876543210', request_id: 'req-123' };
+  const start = { method: 'post', url: '/v1/channel-partners/financial-data', body_toggle: true, body: [], raw_body: '{{parameters.requestBody}}', url_params: [] };
+  const parsed = { ...start, raw_body: JSON.stringify({ input }) };
+  assert.equal(bindDealerReferral(start, parsed, actor), parsed);
+  for (const bad of [{ ...input, draft_id: '' }, { ...input, version: '2' }, { ...input, purpose: 'other' }, { ...input, mobile: '' }, { ...input, request_id: '' }])
+    assert.throws(() => bindDealerReferral(start, { ...parsed, raw_body: JSON.stringify({ input: bad }) }, actor));
+  for (const [method, suffix] of [['get', ''], ['post', '/sync'], ['post', '/data']]) {
+    const saved = { method, url: '/v1/channel-partners/financial-data/{{parameters.requestId}}' + suffix, url_params: [['draft_id', '{{parameters.draftId}}']] };
+    const query = { ...saved, url: '/v1/channel-partners/financial-data/req-123' + suffix, url_params: [['draft_id', draft]] };
+    assert.equal(bindDealerReferral(saved, query, actor), query);
+    assert.throws(() => bindDealerReferral(saved, query, actor, { url_parameters: [['draft_id', draft]] }));
+    assert.throws(() => bindDealerReferral(saved, query, { ...actor, personToken: 'p'.repeat(48) }));
+    for (const params of [[], [['draft_id', '']], [['draft_id', draft], ['draft_id', draft]]])
+      assert.throws(() => bindDealerReferral(saved, { ...query, url_params: params }, actor));
+  }
 });

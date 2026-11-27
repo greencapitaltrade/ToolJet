@@ -227,7 +227,7 @@ export class DataQueriesUtilService implements IDataQueriesUtilService {
         }
         if (viewerActor) {
           try {
-            parsedQueryOptions = bindDealerReferral(savedRestOptions, parsedQueryOptions, viewerActor);
+            parsedQueryOptions = bindDealerReferral(savedRestOptions, parsedQueryOptions, viewerActor, sourceOptions);
           } catch {
             throw new QueryError('Invalid dealer intake body.', '', { status: 400 });
           }
