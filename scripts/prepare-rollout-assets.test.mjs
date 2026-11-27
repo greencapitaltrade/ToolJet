@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { gzipSync } from 'node:zlib';
 import { prepareRolloutAssets } from './prepare-rollout-assets.mjs';
 
 const baselineHtml = '<script defer src="/main.012345ab.js"></script>';
@@ -56,6 +57,31 @@ test('rejects hashed files whose path is shared and contents differ', async (t) 
   await put(candidate, 'main.012345ab.js', 'different bytes under the old hash');
   await assert.rejects(prepareRolloutAssets(baseline, candidate, output), /Hashed path has different bytes: main/);
   await assert.rejects(readFile(join(output, 'manifest.json')), { code: 'ENOENT' });
+});
+
+test('permits different gzip encoding only when both streams match the same immutable file', async (t) => {
+  const { baseline, candidate, output, put } = await fixture(t);
+  const file = 'shared.01010101.chunk.js';
+  const payload = '// shared code\n'.repeat(200);
+  const compressionA = gzipSync(payload, { level: 1 });
+  const compressionB = gzipSync(payload, { level: 9 });
+  assert.notDeepEqual(compressionA, compressionB);
+  await Promise.all([
+    put(baseline, file, payload),
+    put(candidate, file, payload),
+    put(baseline, `${file}.gz`, compressionA),
+    put(candidate, `${file}.gz`, compressionB),
+  ]);
+
+  const manifest = await prepareRolloutAssets(baseline, candidate, output);
+  assert.equal(manifest.equivalentGzip.length, 1);
+  assert.equal(manifest.equivalentGzip[0].path, `${file}.gz`);
+  await assert.rejects(readFile(join(output, 'baseline', `${file}.gz`)), { code: 'ENOENT' });
+  await put(candidate, `${file}.gz`, gzipSync('unrelated'));
+  await assert.rejects(
+    prepareRolloutAssets(baseline, candidate, `${output}-invalid`),
+    /Hashed path has different bytes: shared/
+  );
 });
 
 test('rejects changed and new unversioned assets for separate compatibility review', async (t) => {

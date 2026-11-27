@@ -2,8 +2,10 @@ import { createHash } from 'node:crypto';
 import { copyFile, lstat, mkdir, readFile, readdir, realpath, rm, writeFile } from 'node:fs/promises';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { gunzipSync } from 'node:zlib';
 
 const entrypoint = 'index.html';
+const digest = (data) => createHash('sha256').update(data).digest('hex');
 const isVersioned = (path) =>
   /(?:^|\/)[^/]+\.[a-f\d]{8,64}(?:\.chunk)?\.(?:js|css)(?:\.(?:gz|br|map|LICENSE\.txt))?$/.test(path) ||
   /^(?:assets\/)[a-f\d]{8,64}\.[^/]+$/.test(path);
@@ -33,12 +35,7 @@ async function inventory(root) {
         directories.add(path);
         await visit(path);
       } else if (entry.isFile()) {
-        files.set(
-          path,
-          createHash('sha256')
-            .update(await readFile(join(root, path)))
-            .digest('hex')
-        );
+        files.set(path, digest(await readFile(join(root, path))));
       } else {
         throw new Error(`Unsupported asset: ${path}`);
       }
@@ -54,6 +51,21 @@ async function inventory(root) {
 function inside(directory, path) {
   const suffix = relative(directory, path);
   return !isAbsolute(suffix) && suffix !== '..' && !suffix.startsWith(`..${sep}`);
+}
+
+async function matchesGzipPayload(path, baseline, candidate, baselineRoot, candidateRoot) {
+  if (!path.endsWith('.gz')) return;
+  const uncompressed = path.slice(0, -3);
+  const expected = baseline.files.get(uncompressed);
+  if (!expected || candidate.files.get(uncompressed) !== expected) return;
+  const { size } = await lstat(join(baselineRoot, uncompressed));
+  try {
+    const originals = await Promise.all([baselineRoot, candidateRoot].map((root) => readFile(join(root, path))));
+    if (originals.every((data) => digest(gunzipSync(data, { maxOutputLength: size + 1 })) === expected))
+      return expected;
+  } catch {
+    // A missing or unreadable compressed payload cannot establish equivalence.
+  }
 }
 
 export async function prepareRolloutAssets(baselineBuild, candidateBuild, outputDirectory) {
@@ -74,6 +86,7 @@ export async function prepareRolloutAssets(baselineBuild, candidateBuild, output
 
   const [baseline, candidate] = await Promise.all([inventory(baselineRoot), inventory(candidateRoot)]);
   const overlays = { baseline: [], candidate: [] };
+  const equivalentGzip = [];
   const differences = [];
   const paths = [...new Set([...baseline.files.keys(), ...candidate.files.keys()])].sort();
   for (const path of paths) {
@@ -89,7 +102,12 @@ export async function prepareRolloutAssets(baselineBuild, candidateBuild, output
         `${oldHash && newHash ? 'Unversioned asset differs' : 'Unversioned asset exists in only one build'}: ${path}`
       );
     } else if (oldHash && newHash) {
-      differences.push(`Hashed path has different bytes: ${path}`);
+      const payload = await matchesGzipPayload(path, baseline, candidate, baselineRoot, candidateRoot);
+      if (payload) {
+        equivalentGzip.push({ path, payloadSha256: payload });
+      } else {
+        differences.push(`Hashed path has different bytes: ${path}`);
+      }
     } else {
       overlays[oldHash ? 'candidate' : 'baseline'].push({ path, sha256: oldHash ?? newHash });
     }
@@ -101,6 +119,7 @@ export async function prepareRolloutAssets(baselineBuild, candidateBuild, output
   const manifest = {
     entrypoints: { baseline: baseline.files.get(entrypoint), candidate: candidate.files.get(entrypoint) },
     overlays,
+    equivalentGzip,
   };
   await mkdir(output);
   try {
@@ -113,11 +132,7 @@ export async function prepareRolloutAssets(baselineBuild, candidateBuild, output
         const destination = join(output, target, path);
         await mkdir(dirname(destination), { recursive: true });
         await copyFile(join(source, path), destination);
-        if (
-          createHash('sha256')
-            .update(await readFile(destination))
-            .digest('hex') !== sha256
-        ) {
+        if (digest(await readFile(destination)) !== sha256) {
           throw new Error(`Asset changed during preparation: ${path}`);
         }
       }

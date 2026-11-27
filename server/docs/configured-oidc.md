@@ -43,7 +43,7 @@ The web server serves its own frontend build. Before mixing images, unpack the c
 node scripts/prepare-rollout-assets.mjs baseline-build candidate-build new-output
 ```
 
-Apply `new-output/baseline` to the rollback image and `new-output/candidate` to the forward image. Each overlay adds only the other image's content-hashed assets and preserves the image's own HTML. The command rejects missing entrypoint assets, conflicting hashes, and changed unversioned assets. Retain the generated manifest alongside the rollout evidence. Verify that forced cross-pod frontend loads and already-open tabs work during promotion and rollback before promoting the images.
+Apply `new-output/baseline` to the rollback image and `new-output/candidate` to the forward image. Each overlay adds only the other image's content-hashed assets and preserves the image's own HTML. The command rejects missing entrypoint assets, conflicting hashes, and changed unversioned assets. Different gzip streams may share a path only if both decode to the same underlying immutable file. Retain the generated manifest alongside the rollout evidence. Verify that forced cross-pod frontend loads and already-open tabs work during promotion and rollback before promoting the images.
 
 ## Workspace members and sessions
 
