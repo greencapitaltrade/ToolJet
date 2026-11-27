@@ -20,7 +20,9 @@ describe('Configured CE OIDC', () => {
     TOOLJET_OIDC_WORKSPACE_ID: workspaceId,
   };
 
-  beforeEach(() => jest.replaceProperty(process, 'env', { ...process.env, ...environment }));
+  beforeEach(() =>
+    jest.replaceProperty(process, 'env', { ...process.env, ...environment, TOOLJET_OIDC_CONNECTORS: undefined })
+  );
   afterEach(() => jest.restoreAllMocks());
 
   it('enables CE only with a full, pinned HTTPS configuration', () => {
@@ -133,6 +135,45 @@ describe('Configured CE OIDC', () => {
     await expect(service.complete(request as never, response as never)).rejects.toThrow(UnauthorizedException);
     expect(client.callback).toHaveBeenCalledTimes(1);
   });
+
+  it.each([false, true])(
+    'completes a pre-existing callback after switching connector configuration (managed start: %s)',
+    async (managedStart) => {
+      const mapping = JSON.stringify({
+        [workspaceId]: {
+          issuer,
+          clientId: environment.TOOLJET_OIDC_CLIENT_ID,
+          clientSecretEnv: 'TOOLJET_OIDC_CLIENT_SECRET',
+        },
+      });
+      const returnTo = '/applications/portfolio?view=pending#overview';
+      process.env.TOOLJET_OIDC_CONNECTORS = managedStart ? mapping : undefined;
+      const startingPod = prepareService();
+      await startingPod.service.start(startingPod.response as never, returnTo);
+      const [startedState, savedFlow] = startingPod.challenges.createSSOResponse.mock.calls[0];
+
+      process.env.TOOLJET_OIDC_CONNECTORS = managedStart ? undefined : mapping;
+      const callbackPod = prepareService();
+      callbackPod.consume.mockResolvedValueOnce(JSON.parse(savedFlow));
+      callbackPod.client.callbackParams.mockReturnValueOnce({ code: 'provider-code', state: startedState });
+
+      await expect(
+        callbackPod.service.complete(callbackPod.request as never, callbackPod.response as never)
+      ).resolves.toBe(returnTo);
+      expect(callbackPod.consume).toHaveBeenCalledWith(flowId, startedState);
+      expect(callbackPod.client.callback).toHaveBeenCalledWith(
+        'https://tools.example.test/api/oauth/oidc/callback',
+        { code: 'provider-code', state: startedState },
+        expect.objectContaining({ code_verifier: expect.any(String), nonce: expect.any(String) })
+      );
+      expect(callbackPod.establishSession).toHaveBeenCalledWith(
+        callbackPod.response,
+        workspaceId,
+        { issuer, sub: '123', clientId: environment.TOOLJET_OIDC_CLIENT_ID },
+        undefined
+      );
+    }
+  );
 
   it('rejects absent browser state and the wrong discovered issuer before any token exchange', async () => {
     const { service, client, response, consume, discover } = prepareService();

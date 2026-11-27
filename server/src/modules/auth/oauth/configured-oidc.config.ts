@@ -12,6 +12,8 @@ export type ConfiguredOidcSettings = {
   redirectUri: string;
 };
 
+type ConnectorSettings = Pick<ConfiguredOidcSettings, 'issuer' | 'clientId' | 'clientSecret' | 'workspaceId'>;
+
 export function isHttpsUrl(value?: string): boolean {
   try {
     const url = new URL(value);
@@ -21,19 +23,67 @@ export function isHttpsUrl(value?: string): boolean {
   }
 }
 
+function readManagedConnector(value: string, env: NodeJS.ProcessEnv): ConnectorSettings | null {
+  try {
+    const mapping: unknown = JSON.parse(value);
+    if (!mapping || typeof mapping !== 'object' || Array.isArray(mapping)) return null;
+    const entries = Object.entries(mapping);
+    // Keep the existing single-workspace start and callback contract in this rollout.
+    if (entries.length !== 1) return null;
+    const [[workspaceId, entry]] = entries;
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry) || Object.keys(entry).length !== 3) return null;
+    const { issuer, clientId, clientSecretEnv } = entry as Record<string, unknown>;
+    if (
+      typeof issuer !== 'string' ||
+      typeof clientId !== 'string' ||
+      typeof clientSecretEnv !== 'string' ||
+      !/^TOOLJET_OIDC_CLIENT_SECRET(?:_[A-Z0-9_]+)?$/.test(clientSecretEnv)
+    ) {
+      return null;
+    }
+    return { issuer, clientId, workspaceId, clientSecret: env[clientSecretEnv] };
+  } catch {
+    return null;
+  }
+}
+
 export function getConfiguredOidcSettings(env = process.env): ConfiguredOidcSettings | null {
   const {
     TOOLJET_EDITION = 'ce',
-    TOOLJET_OIDC_ISSUER: issuer,
-    TOOLJET_OIDC_CLIENT_ID: clientId,
-    TOOLJET_OIDC_CLIENT_SECRET: clientSecret,
-    TOOLJET_OIDC_WORKSPACE_ID: workspaceId,
+    TOOLJET_OIDC_ISSUER: legacyIssuer,
+    TOOLJET_OIDC_CLIENT_ID: legacyClientId,
+    TOOLJET_OIDC_CLIENT_SECRET: legacyClientSecret,
+    TOOLJET_OIDC_WORKSPACE_ID: legacyWorkspaceId,
+    TOOLJET_OIDC_CONNECTORS: mapping,
     TOOLJET_HOST: host,
     SUB_PATH: rawSubpath = '',
   } = env;
 
+  if (TOOLJET_EDITION.toLowerCase() !== 'ce') return null;
+  const connector =
+    mapping === undefined
+      ? {
+          issuer: legacyIssuer,
+          clientId: legacyClientId,
+          clientSecret: legacyClientSecret,
+          workspaceId: legacyWorkspaceId,
+        }
+      : readManagedConnector(mapping, env);
+  if (!connector) return null;
+
+  const { issuer, clientId, clientSecret, workspaceId } = connector;
   if (
-    TOOLJET_EDITION.toLowerCase() !== 'ce' ||
+    mapping !== undefined &&
+    (legacyIssuer !== undefined || legacyClientId !== undefined || legacyWorkspaceId !== undefined) &&
+    (issuer !== legacyIssuer ||
+      clientId !== legacyClientId ||
+      clientSecret !== legacyClientSecret ||
+      workspaceId.toLowerCase() !== legacyWorkspaceId?.toLowerCase())
+  ) {
+    return null;
+  }
+
+  if (
     !isHttpsUrl(issuer) ||
     new URL(issuer).search ||
     !clientId ||
@@ -57,6 +107,16 @@ export function getConfiguredOidcSettings(env = process.env): ConfiguredOidcSett
     subpath,
     redirectUri: `${base.origin}${subpath}/api/oauth/oidc/callback`,
   };
+}
+
+export function assertConfiguredOidcSettings(env = process.env): void {
+  if (
+    (env.TOOLJET_EDITION ?? 'ce').toLowerCase() === 'ce' &&
+    env.TOOLJET_OIDC_CONNECTORS !== undefined &&
+    !getConfiguredOidcSettings(env)
+  ) {
+    throw new Error('Invalid TOOLJET_OIDC_CONNECTORS configuration');
+  }
 }
 
 export function oidcReturnPath(value: unknown, settings: ConfiguredOidcSettings): string {

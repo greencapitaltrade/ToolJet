@@ -1,6 +1,6 @@
 # Configured OpenID Connect in Community Edition
 
-Configure one HTTPS issuer and one ToolJet workspace on every server instance:
+Configure one HTTPS issuer and one ToolJet workspace on every server instance. The legacy environment variables are:
 
 - `TOOLJET_OIDC_ISSUER` is the provider's declared issuer URL.
 - `TOOLJET_OIDC_CLIENT_ID` and `TOOLJET_OIDC_CLIENT_SECRET` are the registered confidential client credentials.
@@ -8,6 +8,24 @@ Configure one HTTPS issuer and one ToolJet workspace on every server instance:
 - `TOOLJET_HOST` is the public HTTPS origin. Set `SUB_PATH` for a subpath deployment.
 
 Register the callback at `<ToolJet origin>/api/oauth/oidc/callback`. For a subpath deployment at `/tools/`, the callback is `<ToolJet origin>/tools/api/oauth/oidc/callback`. The provider must support Authorization Code with S256 PKCE, `client_secret_basic`, and RS256 ID tokens. The sign-in button is available on the configured workspace login and app sign-in screens. An app can start the same flow through `GET /api/oauth/oidc/start?returnTo=/applications/<app-slug>`.
+
+## Managed workspace configuration
+
+Set `TOOLJET_OIDC_CONNECTORS` to a JSON object keyed by the ToolJet workspace UUID. The credential reference points to the name of an environment variable provided by the deployment's secret manager. Use `TOOLJET_OIDC_CLIENT_SECRET` or an environment name with that prefix followed by an underscore and a suffix.
+
+```json
+{
+  "6b5aa378-072f-4022-977e-0066545ee3c6": {
+    "issuer": "https://accounts.example.test/oidc",
+    "clientId": "staff",
+    "clientSecretEnv": "TOOLJET_OIDC_CLIENT_SECRET"
+  }
+}
+```
+
+This release accepts one entry. Keep the legacy settings during a rolling upgrade and binary rollback. If both forms are set, they must resolve to the same issuer, client, credential and workspace. An invalid or conflicting managed setting prevents server startup. Start and callback URLs, the one-time challenge, and native session stamps use the existing formats.
+
+## Workspace members and sessions
 
 Use existing active ToolJet accounts and workspace memberships. On first sign-in, a verified provider email must match an active workspace member. ToolJet then binds the account to the issuer and subject. For a member without a verified provider email, an operator can instead verify that user's issuer subject and pre-bind the existing ToolJet user by adding a row to `configured_oidc_identities` (`issuer`, `subject`, `user_id`). Subsequent sign-ins resolve this binding. Changing the provider email leaves the identity binding intact.
 

@@ -22,13 +22,19 @@ describe('SessionUtilService configured OIDC actor', () => {
       TOOLJET_OIDC_CLIENT_ID: clientId,
       TOOLJET_OIDC_CLIENT_SECRET: 'test-only',
       TOOLJET_OIDC_WORKSPACE_ID: workspaceId,
+      TOOLJET_OIDC_CONNECTORS: undefined,
     });
     manager.findOne.mockReset();
     jest.spyOn(database, 'dbTransactionWrap').mockImplementation(async (operation) => operation(manager));
   });
   afterEach(() => jest.restoreAllMocks());
 
-  it('uses only the authenticated user and active native session to resolve an actor', async () => {
+  it.each([false, true])('resolves the existing native session actor (managed connector: %s)', async (managed) => {
+    if (managed) {
+      process.env.TOOLJET_OIDC_CONNECTORS = JSON.stringify({
+        [workspaceId]: { issuer, clientId, clientSecretEnv: 'TOOLJET_OIDC_CLIENT_SECRET' },
+      });
+    }
     manager.findOne.mockResolvedValue({ oidcIdentity: actor });
 
     await expect(service.getOidcActor(user)).resolves.toEqual(actor);

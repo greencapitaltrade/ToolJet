@@ -22,6 +22,7 @@ import { Reflector } from '@nestjs/core';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { migrateSchemaBeforeBoot } from './migration-helpers/migrate-before-boot';
 import { MigrationRunsService } from '@modules/app/migration-runs/service';
+import { assertConfiguredOidcSettings } from '@modules/auth/oauth/configured-oidc.config';
 
 // Import helper functions
 import {
@@ -52,6 +53,7 @@ async function bootstrap() {
   logger.log('🚀 Starting ToolJet application bootstrap...');
 
   try {
+    assertConfiguredOidcSettings();
     logger.log('Creating NestJS application...');
     const app = await NestFactory.create<NestExpressApplication>(await AppModule.register({ IS_GET_CONTEXT: false }), {
       bufferLogs: true,
