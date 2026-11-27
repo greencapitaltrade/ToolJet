@@ -28,6 +28,15 @@ import { ListTablesDto } from './dto';
 import { DataSourceScopes, DataSourceTypes, SAMPLE_SQL_DISABLED_KEY } from '@modules/data-sources/constants';
 import { SessionUtilService } from '@modules/session/util.service';
 import { getOidcRestSourceOrigin, prepareOidcRestQuery } from './oidc-rest';
+import {
+  DEALER_VIEWER_COOKIE,
+  DEALER_VIEWER_ENV,
+  dealerViewerActor,
+  dealerViewerConfig,
+  bindDealerReferral,
+} from './dealer-viewer';
+import { ApplicantSessions } from '../applicant-session/store';
+import { RedisService } from '@modules/redis/service';
 
 @Injectable()
 export class DataQueriesUtilService implements IDataQueriesUtilService {
@@ -37,7 +46,8 @@ export class DataQueriesUtilService implements IDataQueriesUtilService {
     protected readonly appEnvironmentUtilService: AppEnvironmentUtilService,
     protected readonly dataSourceUtilService: DataSourcesUtilService,
     protected readonly pluginsSelectorService: PluginsServiceSelector,
-    @Optional() private readonly sessions?: SessionUtilService
+    @Optional() private readonly sessions?: SessionUtilService,
+    @Optional() private readonly redis?: RedisService
   ) {}
   async validateQueryActionsAgainstEnvironment(organizationId: string, appVersionId: string, errorMessage: string) {
     return dbTransactionWrap(async (manager: EntityManager) => {
@@ -138,8 +148,14 @@ export class DataQueriesUtilService implements IDataQueriesUtilService {
       dataSource.options = dataSourceOptions.options;
 
       const trustedRestOrigin = dataSource.kind === 'restapi' ? getOidcRestSourceOrigin(dataSource.id) : undefined;
+      const dealerRaw = this.configService.get<string>(DEALER_VIEWER_ENV);
+      const dealerSecret = this.configService.get<string>('SECRET_KEY_BASE');
+      const dealerConfig = dealerViewerConfig(dealerRaw, dealerSecret);
+      if (dealerConfig?.sourceId === dataSource.id && !trustedRestOrigin) {
+        throw new QueryError('Unable to use the configured REST connection.', '', { status: 503 });
+      }
       // The native parser resolves options in place. Preserve the saved route before applying request parameters.
-      const savedRestOptions = { url: dataQuery.options?.url, method: dataQuery.options?.method };
+      const savedRestOptions = { ...dataQuery.options };
       let { sourceOptions, parsedQueryOptions, service } = await this.fetchServiceAndParsedParams(
         dataSource,
         dataQuery,
@@ -161,13 +177,69 @@ export class DataQueriesUtilService implements IDataQueriesUtilService {
         ) {
           throw new QueryError('Unable to use the configured REST connection.', '', { status: 503 });
         }
+        let viewerActor:
+          | {
+              userId: string;
+              organizationId: string;
+              referral: string;
+              email: string;
+              personToken?: string;
+              participantClaim?: boolean;
+            }
+          | undefined;
+        if (
+          dealerConfig?.sourceId === dataSource.id &&
+          (appToUse.id === dealerConfig.appId || !appToUse.id || mode !== 'view' || effectiveIsPublic !== false)
+        ) {
+          try {
+            if (mode !== 'view' || !this.redis) throw new Error('Dealer viewer unavailable');
+            const request = response.req;
+            const store = new ApplicantSessions<{
+              userId: string;
+              organizationId: string;
+              email: string;
+              emailVerified: boolean;
+              referral: string;
+              personToken?: string;
+            }>({ call: (command, ...args) => this.redis.getClient().call(command, ...args) }, 'dealer-viewer');
+            viewerActor = await dealerViewerActor(
+              dealerRaw,
+              dealerSecret,
+              {
+                sourceId: dataSource.id,
+                appId: appToUse.id,
+                appVersionId: dataQuery.appVersionId,
+                currentVersionId: appToUse.currentVersionId,
+                queryId: dataQuery.id,
+                isPublic: effectiveIsPublic === true,
+                origin: request.get('origin'),
+                site: request.get('sec-fetch-site'),
+                cookie: request.cookies?.[DEALER_VIEWER_COOKIE],
+              },
+              async (scope, id) => {
+                const key = store.key(scope, id);
+                return key ? store.get(key) : null;
+              }
+            );
+          } catch {
+            throw new QueryError('Sign in to use this connection.', '', { status: 401 });
+          }
+        }
+        if (viewerActor) {
+          try {
+            parsedQueryOptions = bindDealerReferral(savedRestOptions, parsedQueryOptions, viewerActor, sourceOptions);
+          } catch {
+            throw new QueryError('Invalid dealer intake body.', '', { status: 400 });
+          }
+        }
         const prepared = await prepareOidcRestQuery(
           trustedRestOrigin,
           savedRestOptions,
           parsedQueryOptions,
           sourceOptions,
           user,
-          this.sessions
+          this.sessions,
+          viewerActor
         );
         sourceOptions = prepared.sourceOptions;
         parsedQueryOptions = prepared.queryOptions;

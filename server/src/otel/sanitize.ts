@@ -32,7 +32,7 @@ export function sanitizeOAuthUrl(value: unknown): unknown {
 }
 
 export function isConfiguredOidcRequest(url: unknown): boolean {
-  return typeof url === 'string' && /\/api\/oauth\/oidc\/(?:start|callback)\/?$/i.test(url.split(/[?#]/, 1)[0]);
+  return typeof url === 'string' && /\/api\/(?:oauth\/oidc|dealer-onboarding\/viewer)\/(?:start|callback)\/?$/i.test(url.split(/[?#]/, 1)[0]);
 }
 
 export function isApplicantOnboardingRequest(url: unknown): boolean {

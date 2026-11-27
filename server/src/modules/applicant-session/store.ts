@@ -1,5 +1,7 @@
 import { createHmac, randomBytes } from 'node:crypto';
-import { ApplicantPurpose, ApplicantScope, rejectApplicant } from './fury';
+import { ApplicantPurpose, rejectApplicant } from './fury';
+
+export type ApplicantSessionScope = { origin: string; organizationId: string; lspSecret: string };
 
 const sessionPattern = /^[A-Za-z0-9_-]{43}$/;
 const increment = "local n=redis.call('INCR',KEYS[1]); if n==1 then redis.call('EXPIRE',KEYS[1],ARGV[1]) end; return n";
@@ -13,19 +15,19 @@ export const newApplicantHandle = () => randomBytes(32).toString('base64url');
 export class ApplicantSessions<T> {
   constructor(
     private readonly redis: ApplicantRedis,
-    private readonly purpose: ApplicantPurpose
+    private readonly purpose: ApplicantPurpose | 'dealer-viewer'
   ) {}
 
-  private scopedKey(scope: ApplicantScope, kind: string, id: string) {
+  private scopedKey(scope: ApplicantSessionScope, kind: string, id: string) {
     const digest = createHmac('sha256', scope.lspSecret).update(scope.origin).update('\0').update(id).digest('hex');
     return `${this.purpose}-onboarding:{${scope.organizationId}}:${kind}:${digest}`;
   }
 
-  key(scope: ApplicantScope, id: string | undefined) {
+  key(scope: ApplicantSessionScope, id: string | undefined) {
     return id && sessionPattern.test(id) ? this.scopedKey(scope, 'state', id) : undefined;
   }
 
-  async rate(scope: ApplicantScope, bucket: string, subject: string, limit: number, seconds: number) {
+  async rate(scope: ApplicantSessionScope, bucket: string, subject: string, limit: number, seconds: number) {
     const result = await this.redis.call(
       'EVAL',
       increment,
@@ -36,7 +38,7 @@ export class ApplicantSessions<T> {
     if (typeof result !== 'number' || result > limit) rejectApplicant(429);
   }
 
-  async start(scope: ApplicantScope, state: T, seconds: number) {
+  async start(scope: ApplicantSessionScope, state: T, seconds: number) {
     const id = newApplicantHandle();
     const key = this.scopedKey(scope, 'state', id);
     if ((await this.redis.call('SET', key, JSON.stringify(state), 'EX', String(seconds), 'NX')) !== 'OK')
@@ -53,7 +55,7 @@ export class ApplicantSessions<T> {
     if ((await this.redis.call('SET', key, JSON.stringify(state), 'XX', 'KEEPTTL')) !== 'OK') rejectApplicant(409);
   }
 
-  async rotate(scope: ApplicantScope, previousKey: string, state: T, seconds: number) {
+  async rotate(scope: ApplicantSessionScope, previousKey: string, state: T, seconds: number) {
     const id = newApplicantHandle();
     const key = this.scopedKey(scope, 'state', id);
     if ((await this.redis.call('EVAL', rotate, '2', previousKey, key, JSON.stringify(state), String(seconds))) !== 1)

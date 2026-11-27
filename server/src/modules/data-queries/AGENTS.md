@@ -51,6 +51,7 @@ the right plugin, per-Environment credentials, and `{{ }}` templates before invo
 ## Invariants & gotchas
 
 - A Query belongs to an **App Version**, not an App — every CRUD route is version-scoped.
+- A dealer viewer source can also serve another explicitly private App Version through workspace OIDC in view mode. The configured dealer App always requires its viewer binding. Preview metadata cannot grant workspace OIDC access.
 - Query name unique per app version — enforced via `pg_advisory_xact_lock` in `assertUniqueQueryName`
   (service.ts), not a DB constraint; keep name changes inside `dbTransactionWrap`.
 - Create/update are blocked on promoted versions (`validateQueryActionsAgainstEnvironment`) — only the

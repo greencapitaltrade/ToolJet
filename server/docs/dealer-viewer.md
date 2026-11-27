@@ -1,0 +1,17 @@
+# Public dealer viewer login
+
+The public dealer viewer requires the existing configured OIDC issuer and ToolJet host, a separate Thor `vn_dealer` client (`TOOLJET_DEALER_OIDC_CLIENT_ID` and `TOOLJET_DEALER_OIDC_CLIENT_SECRET`), and the shared Thor enrollment HMAC secret (`TOOLJET_DEALER_ENROLLMENT_INTENT_SECRET`). Store secrets in the deployment's existing secret manager. Register `<ToolJet origin><SUB_PATH>/api/dealer-onboarding/viewer/callback` for this client. `TOOLJET_DEALER_VIEWER` binds the configured source, public app, allowed saved queries, origin and organization. Use the same organization in the Thor client registration. The source UUID in `TOOLJET_OIDC_REST_SOURCES` must map to Destiny's private origin.
+
+The public app POSTs `{ "referral": "..." }` to `/api/dealer-onboarding/viewer/start` from the same origin and navigates to the returned authorization URL. Eligibility is checked before redirecting. The referral and identity remain in a short-lived server session; on callback the viewer returns to the configured released public app. The deployment must verify the native eligibility route, Thor registration and delivery, app integration, Redis, logging, and end-to-end access in a preview before release.
+
+Named director links use the same login. Bootstrap captures the native `onboarding` and `person_kyc` values in page memory and removes them from the address. The public app sends `{ "referral": handoff.token, "personToken": handoff.personToken }` to viewer/start, clears the handoff after a successful response, and navigates to the returned authorization URL. The callback uses `?director=1` solely to select the director UI; it carries no authority. Configure `participantClaimQueryId` in `TOOLJET_DEALER_VIEWER` to the ID of a query also included in `queryIds`. That saved query must POST to `/v1/channel-partners/named-person-consent-handoffs/claim` with `body_toggle: true`, an empty body array, and raw JSON `{"input":{}}`. The server injects both tokens from the protected session. Display the native accepted receipt returned by the query. The owner issue query must POST to `/v1/channel-partners/intakes/{{parameters.draftId}}/person-consent-handoffs` using the same raw-body transport with `{"input":{"slot_id":"..."}}`; the server injects the referral. Add these exact saved-query methods and paths to `queryIds` for director sessions:
+
+- GET `/v1/channel-partners/person-consents/{{parameters.consentId}}`
+- POST `/v1/channel-partners/intakes/{{parameters.draftId}}/people/{{parameters.personId}}/kyc/start`
+- POST `/v1/channel-partners/intakes/{{parameters.draftId}}/people/{{parameters.personId}}/kyc/sync`
+- POST `/v1/channel-partners/person-consents/{{parameters.consentId}}/selfie`
+- POST `/v1/channel-partners/intakes/{{parameters.draftId}}/agreement/own-sign`
+
+Director KYC start and sync use the literal raw body `{"input":{}}`. The selfie query sends a canonical JPEG data URL as `input.selfie`. Own-sign sends the current `input.version`. The server injects the referral for selfie and signing. These POSTs use `body_toggle: true` and an empty body array. The native service enforces receipt and person scope.
+
+Owner KYC uses separate saved queries for start, sync, and selfie. Owner dossier and completion use the existing `referral-dossier` and `referral-completion` routes. Preserve the request version in the saved queries from the dealer app export.
