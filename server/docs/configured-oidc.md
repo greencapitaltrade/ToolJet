@@ -37,6 +37,14 @@ Provision one registration per workspace and use a distinct issuer/client pair f
 3. Open workspace Settings writes with `TOOLJET_OIDC_WORKSPACE_SETTINGS_ENABLED=true`. Enable a new registration from its workspace only after every Thor and ToolJet replica can read its registration. Exercise start and callback on separate replicas and verify a private saved query. A workspace without a provisioned connector keeps its existing login methods.
 4. **Restore deployment default** clears the workspace selection. The legacy workspace resumes using its original registration. A managed-only workspace returns to its existing login methods, with pending managed challenges and session proofs invalidated. Freezing Settings writes preserves stored selections. Restore the legacy default and withdraw additional workspace flows before using a binary that only reads the original registration.
 
+The web server serves its own frontend build. Before mixing images, unpack the completed frontend from each exact image and prepare asset overlays with:
+
+```sh
+node scripts/prepare-rollout-assets.mjs baseline-build candidate-build new-output
+```
+
+Apply `new-output/baseline` to the rollback image and `new-output/candidate` to the forward image. Each overlay adds only the other image's content-hashed assets and preserves the image's own HTML. The command rejects missing entrypoint assets, conflicting hashes, and changed unversioned assets. Retain the generated manifest alongside the rollout evidence. Verify that forced cross-pod frontend loads and already-open tabs work during promotion and rollback before promoting the images.
+
 ## Workspace members and sessions
 
 Use existing active ToolJet accounts and workspace memberships. On first sign-in, a verified provider email must match an active workspace member. ToolJet then binds the account to the issuer and subject. For a member without a verified provider email, an operator can instead verify that user's issuer subject and pre-bind the existing ToolJet user by adding a row to `configured_oidc_identities` (`issuer`, `subject`, `user_id`). Subsequent sign-ins resolve this binding. Changing the provider email leaves the identity binding intact.
