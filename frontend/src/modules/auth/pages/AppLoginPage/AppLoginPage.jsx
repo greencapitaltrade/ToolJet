@@ -75,7 +75,7 @@ const AppLoginPage = () => {
           ? configs?.automatic_sso_login
           : window.public_config?.AUTOMATIC_SSO_LOGIN === 'true';
 
-      if (shouldAttemptAutoSSO && !isConfiguredOidcEnabled(config.organizationId)) {
+      if (shouldAttemptAutoSSO && !isConfiguredOidcEnabled(config.organizationId, configs)) {
         const hasEnabledOidc = Array.isArray(configs?.openid)
           ? configs.openid.some((c) => c.enabled)
           : configs?.openid?.enabled;

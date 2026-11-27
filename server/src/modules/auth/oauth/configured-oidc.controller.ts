@@ -15,9 +15,13 @@ export class ConfiguredOidcController {
 
   @Get('start')
   @InitFeature(FEATURE_KEY.OAUTH_OPENID_CONFIGS)
-  async start(@Query('returnTo') returnTo: string, @Res() response: Response) {
+  async start(
+    @Query('returnTo') returnTo: string,
+    @Query('workspaceId') workspaceId: string,
+    @Res() response: Response
+  ) {
     response.set({ 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' });
-    response.redirect(await this.oidc.start(response, returnTo));
+    response.redirect(await this.oidc.start(response, returnTo, workspaceId));
   }
 
   @Get('callback')

@@ -26,7 +26,7 @@ recorded in `User.source` (`SOURCE` enum, `@modules/users/constants/lifecycle.ts
 | `oauth/controller.ts` | `@Controller(['oauth','sso'])`: `sign-in/:configId`, `sign-in/common/:ssoType`, `openid/configs/:configId`, `saml/configs/:configId`, `saml/:configId` |
 | `oauth/service.ts` | SSO sign-in orchestration (`OauthService`) |
 | `oauth/util-services/` | per-provider services for native Google and GitHub (CE), plus enterprise provider interfaces |
-| `oauth/configured-oidc.*` | CE deployment-scoped OpenID Connect relying party for a single pinned issuer and workspace |
+| `oauth/configured-oidc.*` | CE OIDC relying party with an operator-provisioned registration per workspace and a legacy default |
 | `website/` | `@Controller('ai/onboarding')` + `@Controller('otp')` — AI onboarding signup, cookies, OTP |
 | `mfa/repository.ts`, `scheduler.ts` | `UserMfaRepository`; `MfaCleanupScheduler` deletes MFA rows >48h old (daily 5AM) |
 | `guards/` | `AuthorizeWorkspaceGuard`, `SwitchWorkspaceAuthGuard`, `WorkflowAuthGuard`, `ExternalApiSecurityGuard`, `OrganizationIdValidationGuard` |
@@ -52,6 +52,7 @@ recorded in `User.source` (`SOURCE` enum, `@modules/users/constants/lifecycle.ts
 - `forgotPassword` silently succeeds for unknown emails (username-enumeration protection).
 - OIDC PKCE: code verifier rides the `oidc_code_verifier` cookie; token-exchange `redirect_uri` host must match the authorization request (custom-domain aware).
 - Configured CE OIDC stores a one-time PKCE challenge in `sso_responses` and an issuer/subject stamp on the native session. See `server/docs/configured-oidc.md`.
+- Workspace Login admins enable their workspace's provisioned connector. Keep the legacy registration during rollout. Managed callbacks carry an activation revision from the one-time challenge.
 - Partner operations resolve the verified session subject in Thor server-side and forward its user and organization IDs to Destiny's standard partner routes through the existing workload-authenticated mesh. See `server/docs/configured-oidc.md`.
 - `oauth/configured-oidc-workspace.ts` shares the native workspace cookie guard and registered Thor actor lookup with the credit review relay. Each relay checks its own resource authorization separately.
 - Partner operation IDs and cursors are decimal strings at the browser boundary. Destiny can return safe integers, which the relay converts to strings. Fee actions check the scoped partner detail and resolve the same pending dealer's draft ID through the partner directory.

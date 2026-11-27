@@ -3,7 +3,7 @@ import { DataSource } from '@entities/data_source.entity';
 import type { User } from '@entities/user.entity';
 import type { AbilityService } from '@modules/ability/interfaces/IService';
 import { MODULES } from '@modules/app/constants/modules';
-import { getConfiguredOidcSettings } from '@modules/auth/oauth/configured-oidc.config';
+import { getConfiguredOidcSettings, getManagedOidcRegistrations } from '@modules/auth/oauth/configured-oidc.config';
 import { OidcActorUser, resolveThorActor, ThorActorError } from '@modules/auth/oauth/configured-oidc-workspace';
 import type { SessionUtilService } from '@modules/session/util.service';
 import { ForbiddenException } from '@nestjs/common';
@@ -101,9 +101,10 @@ export async function prepareOidcRestQuery(
   user: OidcActorUser | undefined,
   sessions?: SessionUtilService
 ): Promise<{ sourceOptions: RestOptions; queryOptions: RestOptions }> {
-  const settings = getConfiguredOidcSettings();
+  const legacy = getConfiguredOidcSettings();
+  const managed = getManagedOidcRegistrations();
   const thorOrigin = privateServiceOrigin(process.env[OIDC_THOR_ORIGIN_ENV]);
-  if (!settings || !thorOrigin || !sessions || privateServiceOrigin(source.url) !== origin) {
+  if ((!legacy && !managed.size) || !thorOrigin || !sessions || privateServiceOrigin(source.url) !== origin) {
     throw configuredSourceError();
   }
 
@@ -112,6 +113,8 @@ export async function prepareOidcRestQuery(
   }
   if (!user) throw new QueryError('Sign in to use this connection.', '', { status: 401 });
   if (source.auth_type === 'oauth' || source.auth_type === 'oauth2') throw configuredSourceError();
+  const settings = managed.get(user.organizationId) ?? (legacy?.workspaceId === user.organizationId ? legacy : null);
+  if (!settings) throw new QueryError('Sign in to use this connection.', '', { status: 401 });
 
   try {
     const { userId, organizationId } = await resolveThorActor(sessions, user, { ...settings, thorOrigin });

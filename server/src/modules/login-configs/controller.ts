@@ -1,7 +1,7 @@
 import { Controller, Get, Delete, UseGuards, Body, Patch, Param, ParseEnumPipe } from '@nestjs/common';
 import { JwtAuthGuard } from '@modules/session/guards/jwt-auth.guard';
 import { decamelizeKeys } from 'humps';
-import { OrganizationConfigsUpdateDto, UpdateEnvConfigDTO } from './dto';
+import { OrganizationConfigsUpdateDto, UpdateConfiguredOidcDto, UpdateEnvConfigDTO } from './dto';
 import { User } from '@modules/app/decorators/user.decorator';
 import { ILoginConfigsController } from './interfaces/IController';
 import { LoginConfigsService } from './service';
@@ -14,6 +14,7 @@ import { SSOGuard } from '@modules/licensing/guards/sso.guard';
 import { InstanceConfigsUpdateDto } from './dto';
 import { NotFoundException } from '@nestjs/common';
 import { User as UserEntity } from '@entities/user.entity';
+import { setWorkspaceOidc } from '@modules/auth/oauth/configured-oidc.workspace-settings';
 
 @InitModule(MODULES.LOGIN_CONFIGS)
 @Controller('login-configs')
@@ -34,6 +35,13 @@ export class LoginConfigsController implements ILoginConfigsController {
   @Get('/organization')
   async getConfigs(@User() user) {
     return await this.loginConfigsService.getProcessedOrganizationConfigs(user.organizationId);
+  }
+
+  @InitFeature(FEATURE_KEY.UPDATE_ORGANIZATION_SSO)
+  @UseGuards(JwtAuthGuard, FeatureAbilityGuard)
+  @Patch('/organization/managed-oidc')
+  async updateManagedOidc(@Body() body: UpdateConfiguredOidcDto, @User() user: UserEntity) {
+    return decamelizeKeys(await setWorkspaceOidc(user.organizationId, body.mode));
   }
 
   //update organization-sso configs

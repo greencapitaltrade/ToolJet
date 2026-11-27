@@ -1,6 +1,7 @@
 import { Transform } from 'class-transformer';
-import { IsOptional, IsString, MaxLength, IsBoolean, IsUUID } from 'class-validator';
+import { IsOptional, IsString, MaxLength, IsBoolean, IsUUID, IsDefined, IsEnum } from 'class-validator';
 import { sanitizeInput } from '@helpers/utils.helper';
+import { WorkspaceOidcMode } from '@modules/auth/oauth/configured-oidc.workspace-settings';
 
 export class OrganizationConfigsUpdateDto {
   @IsOptional()
@@ -77,4 +78,10 @@ export class UpdateEnvConfigDTO {
   @IsOptional()
   @IsUUID()
   configId?: string;
+}
+
+export class UpdateConfiguredOidcDto {
+  @IsDefined()
+  @IsEnum(WorkspaceOidcMode)
+  mode: WorkspaceOidcMode;
 }

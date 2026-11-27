@@ -22,6 +22,8 @@ import { Reflector } from '@nestjs/core';
 import { EventEmitter2 } from '@nestjs/event-emitter';
 import { migrateSchemaBeforeBoot } from './migration-helpers/migrate-before-boot';
 import { MigrationRunsService } from '@modules/app/migration-runs/service';
+import { getManagedOidcRegistrations } from '@modules/auth/oauth/configured-oidc.config';
+import { ensureWorkspaceOidcStorage } from '@modules/auth/oauth/configured-oidc.workspace-settings';
 
 // Import helper functions
 import {
@@ -52,6 +54,7 @@ async function bootstrap() {
   logger.log('🚀 Starting ToolJet application bootstrap...');
 
   try {
+    getManagedOidcRegistrations();
     logger.log('Creating NestJS application...');
     const app = await NestFactory.create<NestExpressApplication>(await AppModule.register({ IS_GET_CONTEXT: false }), {
       bufferLogs: true,
@@ -168,6 +171,7 @@ async function bootstrap() {
     // Apply SCIM body parser ONLY for /scim routes, can cause streame not readable issues if not configured only for SCIM
     app.use('/api/scim', json({ type: ['application/json', 'application/scim+json'] }));
 
+    await ensureWorkspaceOidcStorage();
     appLogger.log(`Starting server on ${listen_addr}:${port}...`);
     await app.listen(port, listen_addr, async function () {
       logStartupInfo(configService, appLogger);

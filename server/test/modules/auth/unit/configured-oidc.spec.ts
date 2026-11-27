@@ -20,7 +20,10 @@ describe('Configured CE OIDC', () => {
     TOOLJET_OIDC_WORKSPACE_ID: workspaceId,
   };
 
-  beforeEach(() => jest.replaceProperty(process, 'env', { ...process.env, ...environment }));
+  beforeEach(() => {
+    jest.replaceProperty(process, 'env', { ...process.env, ...environment, TOOLJET_OIDC_CONNECTORS: undefined });
+    jest.spyOn(database, 'getDBConnection').mockReturnValue({ query: jest.fn().mockResolvedValue([]) } as never);
+  });
   afterEach(() => jest.restoreAllMocks());
 
   it('enables CE only with a full, pinned HTTPS configuration', () => {
@@ -61,7 +64,7 @@ describe('Configured CE OIDC', () => {
       }),
       issuer: { issuer },
     };
-    const request = { cookies: { tj_oidc_flow: flowId } };
+    const request = { cookies: { tj_oidc_flow: flowId }, query: { code: 'provider-code', state } };
     const response = { cookie: jest.fn(), clearCookie: jest.fn() };
     const consume = jest.fn().mockResolvedValue({
       nonce: 'provider-nonce',
@@ -134,6 +137,59 @@ describe('Configured CE OIDC', () => {
     expect(client.callback).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps legacy callback records readable across replica replacement', async () => {
+    const startingPod = prepareService();
+    await startingPod.service.start(startingPod.response as never, '/applications/portfolio#overview');
+    const [startedState, savedFlow, kind] = startingPod.challenges.createSSOResponse.mock.calls[0];
+    expect(kind).toBe('configured_oidc');
+    expect(JSON.parse(savedFlow)).not.toHaveProperty('connector');
+
+    const callbackPod = prepareService();
+    callbackPod.consume.mockResolvedValueOnce(JSON.parse(savedFlow));
+    callbackPod.request.query.state = startedState;
+    callbackPod.client.callbackParams.mockReturnValueOnce(callbackPod.request.query);
+    await expect(
+      callbackPod.service.complete(callbackPod.request as never, callbackPod.response as never)
+    ).resolves.toBe('/applications/portfolio#overview');
+  });
+
+  it('routes a new workspace callback from its stored registration and rejects it after withdrawal', async () => {
+    const otherWorkspace = '94db67ea-e2e7-47ba-9d92-95cab041e726';
+    const revision = '0be608e4-c342-4d44-8e70-52e863aaa964';
+    const registration = { issuer, client_id: 'other-client', enabled: true, revision };
+    process.env.TOOLJET_OIDC_CONNECTORS = JSON.stringify({
+      [otherWorkspace]: { issuer, clientId: registration.client_id, clientSecretEnv: 'TOOLJET_OIDC_CLIENT_SECRET' },
+    });
+    const query = jest.fn().mockImplementation(async (sql: string) => {
+      return sql.includes('SELECT EXISTS') ? [{ found: true }] : [registration];
+    });
+    jest.spyOn(database, 'getDBConnection').mockReturnValue({ query } as never);
+    const startingPod = prepareService();
+    await startingPod.service.start(startingPod.response as never, '/applications/managed', otherWorkspace);
+    const [startedState, savedFlow, kind] = startingPod.challenges.createSSOResponse.mock.calls[0];
+    expect(kind).toBe('configured_oidc_workspace');
+    expect(JSON.parse(savedFlow)).toMatchObject({ connector: { workspaceId: otherWorkspace, revision } });
+
+    const callbackPod = prepareService();
+    callbackPod.consume.mockResolvedValue(JSON.parse(savedFlow));
+    callbackPod.request.query.state = startedState;
+    callbackPod.client.callbackParams.mockReturnValue(callbackPod.request.query);
+    await expect(
+      callbackPod.service.complete(callbackPod.request as never, callbackPod.response as never)
+    ).resolves.toBe('/applications/managed');
+    expect(callbackPod.establishSession).toHaveBeenCalledWith(
+      callbackPod.response,
+      otherWorkspace,
+      { issuer, sub: '123', clientId: 'other-client', revision },
+      undefined
+    );
+    registration.enabled = false;
+    await expect(
+      callbackPod.service.complete(callbackPod.request as never, callbackPod.response as never)
+    ).rejects.toThrow(UnauthorizedException);
+    expect(callbackPod.client.callback).toHaveBeenCalledTimes(1);
+  });
+
   it('rejects absent browser state and the wrong discovered issuer before any token exchange', async () => {
     const { service, client, response, consume, discover } = prepareService();
 
@@ -161,10 +217,10 @@ describe('Configured CE OIDC', () => {
     expect(statement.where).toHaveBeenCalledWith({
       id: flowId,
       configId: state,
-      sso: 'configured_oidc',
+      sso: expect.objectContaining({ type: 'in', value: ['configured_oidc', 'configured_oidc_workspace'] }),
       createdAt: expect.objectContaining({ type: 'moreThan', value: new Date(now - 5 * 60 * 1000) }),
     });
-    expect(statement.returning).toHaveBeenCalledWith('response');
+    expect(statement.returning).toHaveBeenCalledWith(['response', 'sso']);
     expect(statement.execute).toHaveBeenCalledTimes(1);
   });
 

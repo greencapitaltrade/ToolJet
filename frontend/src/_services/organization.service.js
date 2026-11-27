@@ -10,6 +10,7 @@ export const organizationService = {
   switchOrganization,
   getSSODetails,
   editOrganizationConfigs,
+  setManagedOidc,
   updateEnvConfig,
   getWorkspacesLimit,
   checkWorkspaceUniqueness,
@@ -113,6 +114,15 @@ function editOrganizationConfigs(params) {
     body: JSON.stringify(params),
   };
   return fetch(`${config.apiUrl}/login-configs/organization-sso`, requestOptions).then(handleResponse);
+}
+
+function setManagedOidc(workspaceId, mode) {
+  return fetch(`${config.apiUrl}/login-configs/organization/managed-oidc`, {
+    method: 'PATCH',
+    headers: authHeader(false, workspaceId),
+    credentials: 'include',
+    body: JSON.stringify({ mode }),
+  }).then(handleResponse);
 }
 
 function updateEnvConfig(provider, useEnvConfig, configId) {
